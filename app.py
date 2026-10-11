@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.5'
+VERSI = '0.5.1'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -78,7 +78,7 @@ def cari_katalog(query, sumber):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({'query.title': query, 'rows': 8})
     else:
         url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode({'q': query, 'limit': 8})
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)', 'Accept': 'application/json'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.1 (research prototype)', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -107,7 +107,7 @@ def cari_berdasarkan_jenis(query, jenis):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({
             'query.title': query, 'filter': 'type:journal-article', 'rows': 30
         })
-        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.1 (research prototype)'})
         with urllib.request.urlopen(req, timeout=18) as response:
             data = json.load(response)
         hasil = []
@@ -128,9 +128,9 @@ def cari_berdasarkan_jenis(query, jenis):
 
     # Open Library mengindeks rekaman buku/edisi. Untuk kitab klasik dan tafsir,
     # pengarang serta edisi tetap harus dikonfirmasi secara manual.
-    params = {'title': query, 'limit': 40, 'fields': 'key,title,author_name,first_publish_year,publisher,subject,edition_count'}
+    params = {'title': query, 'limit': 40, 'fields': 'key,title,author_name,first_publish_year,publisher,subject,edition_count,language'}
     url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.1 (research prototype)'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -159,8 +159,31 @@ def cari_berdasarkan_jenis(query, jenis):
             'penerbit': ', '.join(item.get('publisher', [])[:2]), 'doi': '',
             'url': 'https://openlibrary.org' + key if key.startswith('/') else '',
             'sumber': 'Open Library (rekaman karya)', 'jenis': jenis,
-            'kemiripan': nilai})
+            'kemiripan': nilai, 'bahasa_katalog': item.get('language', [])})
     return sorted(hasil, key=lambda x: x['kemiripan'], reverse=True)[:12]
+
+def klasifikasi_edisi(item):
+    """Indikasi metadata, bukan putusan otentisitas atau klasifikasi filologis."""
+    judul = normal(item.get('judul', ''))
+    bahasa = item.get('bahasa_katalog', []) or []
+    if isinstance(bahasa, str):
+        bahasa = [bahasa]
+    bahasa = [str(x).lower() for x in bahasa]
+    if item.get('jenis') == 'Jurnal':
+        return 'Artikel jurnal', 'Tidak berlaku', 'Tidak berlaku'
+    if any(x in judul for x in ('commentary', 'syarah', 'sharh', 'study of', 'analisis', 'kajian terhadap')):
+        kategori = 'Kemungkinan kajian atau syarah'
+    elif any(x in judul for x in ('translation', 'translated', 'terjemah')):
+        kategori = 'Kemungkinan terjemahan'
+    elif 'eng' in bahasa or 'en' in bahasa or 'ind' in bahasa:
+        kategori = 'Kemungkinan edisi terjemahan atau adaptasi'
+    elif 'ara' in bahasa or 'ar' in bahasa:
+        kategori = 'Kemungkinan edisi bahasa Arab'
+    else:
+        kategori = 'Jenis edisi belum dapat ditentukan'
+    nama_bahasa = {'ara': 'Arab', 'ar': 'Arab', 'eng': 'Inggris', 'en': 'Inggris', 'ind': 'Indonesia', 'id': 'Indonesia'}
+    tampilan_bahasa = ', '.join(dict.fromkeys(nama_bahasa.get(x, x) for x in bahasa)) if bahasa else 'Belum tercantum'
+    return kategori, tampilan_bahasa, 'Belum terverifikasi dari katalog'
 
 def simpan_kandidat(item):
     key = (item.get('sumber'), item.get('doi') or item.get('url') or item.get('judul'))
@@ -179,6 +202,11 @@ def tampil_kandidat(items, prefix):
             st.write('Penulis:', item['penulis'] or '-')
             st.write('Tahun:', item['tahun'], '| Penerbit:', item['penerbit'] or '-')
             st.write('Katalog:', item['sumber'], '| Kemiripan judul:', str(item['kemiripan']) + '%')
+            kategori_edisi, bahasa_edisi, status_edisi = klasifikasi_edisi(item)
+            st.write('Jenis edisi (indikasi):', kategori_edisi)
+            st.write('Bahasa (metadata katalog):', bahasa_edisi)
+            st.write('Status keaslian teks:', status_edisi)
+            st.caption('Pengarang asli, penerjemah, cetakan, jilid, dan halaman perlu diperiksa langsung pada edisi yang digunakan.')
             if item.get('doi'):
                 st.write('DOI:', item['doi'])
             if item.get('url', '').startswith('https://'):
@@ -263,7 +291,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.5 | Pencarian berdasarkan jenis sumber, bank sumber sesi, unggah sumber asli, dan perbandingan teks awal. Generative AI belum terhubung.')
+st.info('Versi 0.5.1 | Pencarian terpisah dan pemeriksaan edisi awal. Generative AI belum terhubung.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -376,7 +404,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
                     st.error(f'Katalog belum dapat dihubungi: {e}')
         if st.session_state.get('query_terakhir', (None, None, None)) == (query.strip(), jenis, submenu):
             tampil_kandidat(st.session_state.hasil_pencarian, 'kandidat_' + submenu)
-        st.warning('Pencarian metadata tidak otomatis mengunduh isi kitab. Edisi, pengarang, teks lengkap, kutipan, dan halaman harus diperiksa pada sumber asli.')
+        st.warning('Pemeriksaan edisi ini masih berbasis metadata. Keterangan bahasa tidak selalu tersedia dan belum membuktikan kitab asli atau terjemahan.')
     elif submenu == 'Bank Referensi Aswaja An-Nahdliyah':
         st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini.')
         bank = st.session_state.bank_referensi
