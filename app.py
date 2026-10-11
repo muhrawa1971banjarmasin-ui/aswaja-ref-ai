@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.5.6'
+VERSI = '0.5.8'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -19,7 +19,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {},
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '',
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -38,6 +38,7 @@ MENU = {
 }
 
 def baca_file(file):
+    """Mempertahankan teks asli dan pemisah halaman PDF; DOCX per paragraf."""
     data = BytesIO(file.getvalue())
     if file.name.lower().endswith('.docx'):
         doc = Document(data)
@@ -45,16 +46,52 @@ def baca_file(file):
         for table in doc.tables:
             for row in table.rows:
                 bagian.append(' | '.join(c.text.strip() for c in row.cells))
+        st.session_state.bagian_docx = bagian
+        st.session_state.jenis_dokumen = 'DOCX'
         return '\n'.join(bagian), []
     if file.name.lower().endswith('.pdf'):
         reader = PdfReader(data)
         halaman = [(p.extract_text() or '') for p in reader.pages]
+        st.session_state.bagian_docx = []
+        st.session_state.jenis_dokumen = 'PDF'
         return '\n'.join(halaman), halaman
     raise ValueError('Hanya PDF atau DOCX yang didukung.')
 
+
+def deteksi_judul_awal(teks):
+    """Usulan judul dari halaman awal; tidak menyatakan kepastian."""
+    awal = teks[:5500]
+    baris = [x.strip() for x in awal.splitlines() if x.strip()]
+    for i, line in enumerate(baris[:45]):
+        if re.fullmatch(r'(?:TESIS|SKRIPSI|DISERTASI|THESIS)', line, re.I):
+            kandidat = baris[max(0, i-9):i]
+            kandidat = [x for x in kandidat if len(x) >= 15 and not re.search(r'^(?:oleh|nama|nim|program studi|fakultas|universitas)', x, re.I)]
+            if kandidat:
+                return ' '.join(kandidat[-3:])[:300]
+    return ''
+
+
+def klasifikasi_sitasi(teks):
+    """Pisahkan pola penulis-tahun dari metadata penerbitan dalam tanda kurung."""
+    pola = r'\([^()\n]{2,140}?,\s*(?:1[5-9]\d{2}|20\d{2})(?:\s*[:,]\s*[^()\n]{1,25})?\)'
+    valid, penerbitan, perlu_tinjau = [], [], []
+    kota = r'jakarta|yogyakarta|jogjakarta|bandung|surabaya|semarang|malang|bogor|solo|surakarta|medan|makassar|depok|kairo|beirut|riyadh|london|new york'
+    penerbit = r'pustaka|media|press|publisher|publishing|gramedia|kalam|aksara|mizan|rajawali|grafindo|republika|kalimedia|maarif|ma.rif|bintang|erlangga|kencana|gaya|arruz|ar.ruzz|cv\.|pt\.'
+    for m in re.finditer(pola, teks, flags=re.I):
+        isi = m.group(0)
+        kepala = re.sub(r',\s*(?:1[5-9]\d{2}|20\d{2}).*$', '', isi[1:-1], flags=re.I).strip()
+        if ':' in kepala or re.search(r'^(?:' + kota + r')\b', kepala, re.I) or re.search(r'\b(?:' + penerbit + r')\b', kepala, re.I):
+            penerbitan.append(isi)
+        elif re.fullmatch(r'[A-ZÀ-ÿ][\wÀ-ÿ.\-\s&]{1,80}', kepala) and not re.search(r'\d', kepala):
+            valid.append(isi)
+        else:
+            perlu_tinjau.append(isi)
+    unik = lambda items: list(dict.fromkeys(items))
+    return {'penulis_tahun': unik(valid), 'metadata_penerbitan': unik(penerbitan), 'perlu_tinjau': unik(perlu_tinjau)}
+
+
 def deteksi_kutipan(teks):
-    pola = r'\([^()\n]{2,90}?,\s*(?:19|20)\d{2}(?:\s*[:,]\s*[^()\n]{1,25})?\)'
-    return list(dict.fromkeys(re.findall(pola, teks)))
+    return klasifikasi_sitasi(teks)['penulis_tahun']
 
 def ekstrak_kutipan_langsung(teks):
     """Kutipan bertanda petik, tidak menebak isi sumber asli."""
@@ -78,25 +115,33 @@ def pasangan_referensi(konteks, pustaka):
     return hasil[:5]
 
 def ekstrak_catatan_kaki_pdf(halaman):
-    """Kandidat catatan kaki dari bagian bawah halaman PDF, tanpa mengklaim kepastian."""
+    """Kandidat bernomor, bukan kepastian catatan kaki atau pasangan kutipan."""
     hasil = []
     for no, teks in enumerate(halaman, 1):
         baris = [x.strip() for x in teks.splitlines() if x.strip()]
-        # Bagian akhir halaman lebih mungkin memuat catatan kaki, tetapi tidak selalu.
-        bagian = baris[max(0, int(len(baris) * 0.60)):]
+        bagian = baris[max(0, int(len(baris) * .60)):]
         for i, baris_teks in enumerate(bagian):
-            m = re.match(r'^(?:\[)?(\d{1,3})(?:\]|[.)]|\s{1,3})(?:\s*)(.{12,})$', baris_teks)
+            m = re.match(r'^(?:\[)?(\d{1,3})(?:\]|[.)]|\s{1,3})\s*(.{12,})$', baris_teks)
             if not m:
                 continue
             isi = m.group(2).strip()
-            if not (re.search(r'(?:19|20)\d{2}|hlm\.?|hal\.?|jilid|cet\.?|\bvol\b', isi, re.I)
-                    or ',' in isi):
+            if not (re.search(r'(?:19|20)\d{2}|hlm\.?|hal\.?|jilid|cet\.?|\bvol\b', isi, re.I) or ',' in isi):
                 continue
             sambungan = ' '.join(bagian[i+1:i+3])
-            hasil.append({'nomor': m.group(1), 'teks': (isi + ' ' + sambungan)[:650],
-                          'halaman_pdf': no, 'asal': 'Kandidat catatan kaki PDF'})
+            hasil.append({'nomor': m.group(1), 'teks': (isi + ' ' + sambungan)[:650], 'halaman_pdf': no, 'asal': 'Kandidat catatan kaki PDF'})
     return hasil
 
+
+def nomor_rujukan_terdekat(data, halaman):
+    """Nomor rujukan eksplisit di akhir kutipan; jangan tebak dari urutan daftar."""
+    pos = data.get('posisi', -1)
+    teks = st.session_state.get('isi_dokumen', '')
+    if pos < 0 or pos >= len(teks):
+        return None
+    ujung = pos + len(data.get('teks', '')) + 2
+    frag = teks[ujung:ujung+24]
+    m = re.match(r'^\s*(?:\[(\d{1,3})\]|[¹²³⁴⁵⁶⁷⁸⁹⁰]+|\((\d{1,3})\))', frag)
+    return next((x for x in m.groups() if x), None) if m else None
 
 def identifikasi_halaman_kutipan(kutipan, halaman):
     """Cari halaman tesis, tidak menyamakan dengan halaman cetak."""
@@ -112,20 +157,18 @@ def identifikasi_halaman_kutipan(kutipan, halaman):
 
 
 def kandidat_sumber_kutipan(data, halaman, pustaka):
-    """Pisahkan kandidat catatan kaki dari kecocokan pustaka; jangan tebak sumber."""
     halaman_ke = identifikasi_halaman_kutipan(data['teks'], halaman)
     kandidat = []
+    nomor = nomor_rujukan_terdekat(data, halaman)
     if halaman_ke:
         catatan = ekstrak_catatan_kaki_pdf(halaman)
-        for item in catatan:
-            if abs(item['halaman_pdf'] - halaman_ke) <= 1:
-                kandidat.append(item)
+        kandidat = [item for item in catatan if abs(item['halaman_pdf'] - halaman_ke) <= 1]
+        kandidat.sort(key=lambda c: (0 if nomor and c['nomor'] == nomor else 1, abs(c['halaman_pdf']-halaman_ke)))
     refs = pasangan_referensi(data['konteks'], pustaka)
     return halaman_ke, kandidat[:12], refs
 
-
 def lokasi_kutipan_dokumen(data):
-    """Cari halaman PDF dan BAB dari teks yang tersedia; tidak menebak halaman cetak."""
+    """Temukan lokasi kutipan tanpa menyamakan nomor cetak dan indeks PDF."""
     halaman = st.session_state.get('halaman_tesis', [])
     teks = st.session_state.get('isi_dokumen', '')
     posisi = data.get('posisi', 0)
@@ -135,11 +178,10 @@ def lokasi_kutipan_dokumen(data):
     no_pdf = None
     teks_halaman = ''
     if halaman:
-        # Posisi dihitung dari gabungan halaman yang dipisahkan newline.
         akumulasi = 0
         for i, h in enumerate(halaman, 1):
             akhir = akumulasi + len(h)
-            if posisi <= akhir or i == len(halaman):
+            if posisi < akhir or i == len(halaman):
                 no_pdf, teks_halaman = i, h
                 break
             akumulasi = akhir + 1
@@ -150,7 +192,10 @@ def lokasi_kutipan_dokumen(data):
         angka = [x for x in kandidat if re.fullmatch(r'(?:[0-9]{1,4}|[ivxlcdmIVXLCDM]{1,12})', x)]
         if len(set(angka)) == 1:
             nomor_cetak = angka[0] + ' (indikasi, periksa PDF)'
-    return bab, no_pdf, nomor_cetak
+    posisi_docx = None
+    if not halaman and st.session_state.get('jenis_dokumen') == 'DOCX':
+        posisi_docx = sebelum.count('\n') + 1
+    return bab, no_pdf, nomor_cetak, posisi_docx
 
 def tampil_mesin_pasangan(data, nomor):
     halaman = st.session_state.get('halaman_tesis', [])
@@ -160,6 +205,8 @@ def tampil_mesin_pasangan(data, nomor):
     st.write('**Lokasi kutipan dalam dokumen:**',
              f'Halaman PDF ke-{halaman_ke}' if halaman_ke else 'Belum ditemukan secara pasti')
     st.caption('Nomor halaman PDF tesis bukan nomor halaman sumber kitab.')
+    nomor_rujukan = nomor_rujukan_terdekat(data, halaman)
+    st.write('**Nomor rujukan yang melekat pada kutipan:**', nomor_rujukan or 'Tidak terdeteksi secara eksplisit')
     opsi = ['Belum dapat dipastikan']
     for c in catatan:
         opsi.append(f"Catatan kaki kandidat {c['nomor']} | PDF hlm. {c['halaman_pdf']} | {c['teks'][:130]}")
@@ -181,16 +228,18 @@ def tampilkan_kutipan_tesis():
     kutipan=st.session_state.get('kutipan_langsung', [])
     st.write('**Dokumen:**',st.session_state.nama_dokumen)
     identitas = st.session_state.get('identitas', {})
-    st.write('**Judul karya ilmiah:**', identitas.get('judul') or 'Belum diisi pada Identitas Dokumen')
+    st.write('**Judul karya ilmiah:**', identitas.get('judul') or ((st.session_state.get('judul_terdeteksi') or 'Belum diisi pada Identitas Dokumen') + ' (usulan, belum dikonfirmasi)' if st.session_state.get('judul_terdeteksi') else 'Belum diisi pada Identitas Dokumen'))
     st.caption('Judul dapat diisi melalui Unggah Karya Ilmiah → Identitas Dokumen. Nama file bukan pengganti judul tesis.')
     st.metric('Kutipan langsung terdeteksi',len(kutipan))
     if not kutipan:
         st.warning('Belum terdeteksi kutipan langsung bertanda petik. Anda dapat menggunakan pemeriksaan manual yang sudah tersedia.');return None
     nomor=st.selectbox('Pilih kutipan dari tesis',range(len(kutipan)),format_func=lambda i:f'Kutipan {i+1}: {kutipan[i]["teks"][:90]}',key='pilih_kutipan_tesis')
     data=kutipan[nomor]
-    bab, halaman_pdf, halaman_cetak = lokasi_kutipan_dokumen(data)
+    bab, halaman_pdf, halaman_cetak, posisi_docx = lokasi_kutipan_dokumen(data)
     st.write('**BAB / bagian karya ilmiah:**', bab)
-    st.write('**Halaman PDF dokumen:**', f'Ke-{halaman_pdf}' if halaman_pdf else 'Tidak tersedia untuk DOCX')
+    st.write('**Halaman PDF dokumen:**', f'Ke-{halaman_pdf}' if halaman_pdf else ('Tidak berlaku untuk DOCX' if st.session_state.get('jenis_dokumen') == 'DOCX' else 'Belum ditemukan'))
+    if posisi_docx:
+        st.write('**Lokasi DOCX:**', f'Paragraf teks ke-{posisi_docx} (bukan nomor halaman cetak)')
     st.write('**Halaman cetak karya ilmiah:**', halaman_cetak)
     st.caption('Halaman dokumen karya ilmiah berbeda dari halaman kitab atau buku yang dikutip.')
     st.text_area('Kutipan asli dalam tesis (tidak diubah)',data['teks'],height=130,disabled=True)
@@ -506,7 +555,7 @@ def laporan():
         indeks = int(nomor)
         data_kutipan = st.session_state.get('kutipan_langsung', [])
         if indeks < len(data_kutipan):
-            bab, halaman_pdf, halaman_cetak = lokasi_kutipan_dokumen(data_kutipan[indeks])
+            bab, halaman_pdf, halaman_cetak, _ = lokasi_kutipan_dokumen(data_kutipan[indeks])
             lines.append(f'KUTIPAN {indeks+1} | BAB: {bab} | Halaman PDF karya ilmiah: {halaman_pdf or "Tidak tersedia"} | Halaman cetak: {halaman_cetak}')
         lines.append('KUTIPAN ' + str(indeks+1) + ' | Kandidat dari tesis: ' + pasangan)
     hasil = st.session_state.hasil_perbandingan
@@ -523,7 +572,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.5.6 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
+st.info('Versi 0.5.8 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -565,6 +614,8 @@ elif menu == '📤 Unggah Karya Ilmiah':
                     st.error('Teks tidak terbaca; PDF hasil scan mungkin memerlukan OCR.')
                 else:
                     st.session_state.halaman_tesis = halaman_tesis
+                    st.session_state.judul_terdeteksi = deteksi_judul_awal(teks)
+                    st.session_state.identitas = {} if file.name != st.session_state.get('nama_dokumen') else st.session_state.identitas
                     st.session_state.pasangan_kutipan = {}
                     st.session_state.isi_dokumen = teks
                     st.session_state.nama_dokumen = file.name
@@ -578,6 +629,9 @@ elif menu == '📤 Unggah Karya Ilmiah':
                 st.error(f'Gagal membaca dokumen: {e}')
         if st.session_state.hasil_baca:
             st.write('**Dokumen aktif:**', st.session_state.nama_dokumen)
+            st.write('**Jenis dokumen:**', st.session_state.get('jenis_dokumen') or 'Belum diketahui')
+            if st.session_state.get('judul_terdeteksi'):
+                st.caption('Usulan judul dari halaman awal (perlu konfirmasi): ' + st.session_state.judul_terdeteksi)
     elif submenu == 'Identitas Dokumen':
         st.subheader('Identitas Dokumen')
         data = st.session_state.identitas
@@ -586,7 +640,8 @@ elif menu == '📤 Unggah Karya Ilmiah':
             nim = st.text_input('NIM', value=data.get('nim', ''))
             kampus = st.text_input('Perguruan Tinggi', value=data.get('kampus', ''))
             jenjang = st.selectbox('Jenjang', ['S1', 'S2', 'S3'], index=['S1', 'S2', 'S3'].index(data.get('jenjang', 'S2')))
-            judul = st.text_area('Judul Karya Ilmiah', value=data.get('judul', ''))
+            judul = st.text_area('Judul Karya Ilmiah', value=data.get('judul', '') or st.session_state.get('judul_terdeteksi', ''))
+            st.caption('Judul hasil pembacaan otomatis hanya usulan. Periksa sebelum menyimpan.')
             simpan = st.form_submit_button('💾 Simpan Identitas')
         if simpan:
             st.session_state.identitas = {'nama': nama, 'nim': nim, 'kampus': kampus, 'jenjang': jenjang, 'judul': judul}
@@ -605,10 +660,17 @@ elif menu == '📤 Unggah Karya Ilmiah':
             st.info('Unggah dokumen terlebih dahulu.')
         else:
             tampilkan_kutipan_tesis()
-            st.metric('Sitasi penulis-tahun terdeteksi', len(st.session_state.kutipan))
-            for i, k in enumerate(st.session_state.kutipan, 1):
+            hasil_sitasi = klasifikasi_sitasi(st.session_state.isi_dokumen)
+            st.metric('Sitasi penulis-tahun terdeteksi', len(hasil_sitasi['penulis_tahun']))
+            for i, k in enumerate(hasil_sitasi['penulis_tahun'], 1):
                 st.write(f'{i}. {k}')
-            st.caption('Deteksi masih terbatas pada pola kutipan penulis-tahun.')
+            with st.expander(f"Metadata penerbitan, bukan sitasi penulis-tahun ({len(hasil_sitasi['metadata_penerbitan'])})"):
+                for i, k in enumerate(hasil_sitasi['metadata_penerbitan'], 1):
+                    st.write(f'{i}. {k}')
+            with st.expander(f"Pola ambigu yang perlu diperiksa ({len(hasil_sitasi['perlu_tinjau'])})"):
+                for i, k in enumerate(hasil_sitasi['perlu_tinjau'], 1):
+                    st.write(f'{i}. {k}')
+            st.caption('Klasifikasi berbasis pola, bukan verifikasi bibliografi. Catatan kaki harus ditautkan dengan nomor rujukan yang jelas.')
     else:
         st.subheader('Deteksi Daftar Pustaka')
         if not st.session_state.hasil_baca:
