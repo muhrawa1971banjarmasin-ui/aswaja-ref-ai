@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.4'
+VERSI = '0.5'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -78,7 +78,7 @@ def cari_katalog(query, sumber):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({'query.title': query, 'rows': 8})
     else:
         url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode({'q': query, 'limit': 8})
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.4 (research prototype)', 'Accept': 'application/json'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -99,6 +99,68 @@ def cari_katalog(query, sumber):
             key = item.get('key', '')
             hasil.append({'judul': title, 'penulis': ', '.join(item.get('author_name', [])[:5]), 'tahun': str(item.get('first_publish_year', '-')), 'penerbit': ', '.join(item.get('publisher', [])[:2]), 'doi': '', 'url': 'https://openlibrary.org' + key if key.startswith('/') else '', 'sumber': sumber, 'kemiripan': skor(query, title)})
     return sorted(hasil, key=lambda r: r['kemiripan'], reverse=True)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cari_berdasarkan_jenis(query, jenis):
+    """Pisahkan kategori dan jangan samakan artikel tentang kitab dengan kitabnya."""
+    if jenis == 'Jurnal':
+        url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({
+            'query.title': query, 'filter': 'type:journal-article', 'rows': 30
+        })
+        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)'})
+        with urllib.request.urlopen(req, timeout=18) as response:
+            data = json.load(response)
+        hasil = []
+        for item in data.get('message', {}).get('items', []):
+            if item.get('type') != 'journal-article':
+                continue
+            title = (item.get('title') or [''])[0]
+            if not title:
+                continue
+            authors = ', '.join(' '.join(filter(None, [p.get('given'), p.get('family')])) for p in item.get('author', []))
+            parts = (item.get('published', {}) or {}).get('date-parts', [])
+            hasil.append({'judul': title, 'penulis': authors,
+                'tahun': str(parts[0][0]) if parts and parts[0] else '-',
+                'penerbit': item.get('publisher', ''), 'doi': item.get('DOI', ''),
+                'url': item.get('URL', ''), 'sumber': 'Crossref (artikel jurnal)',
+                'jenis': jenis, 'kemiripan': skor(query, title)})
+        return sorted(hasil, key=lambda x: x['kemiripan'], reverse=True)[:12]
+
+    # Open Library mengindeks rekaman buku/edisi. Untuk kitab klasik dan tafsir,
+    # pengarang serta edisi tetap harus dikonfirmasi secara manual.
+    params = {'title': query, 'limit': 40, 'fields': 'key,title,author_name,first_publish_year,publisher,subject,edition_count'}
+    url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5 (research prototype)'})
+    with urllib.request.urlopen(req, timeout=18) as response:
+        data = json.load(response)
+    hasil = []
+    for item in data.get('docs', []):
+        title = item.get('title', '')
+        if not title:
+            continue
+        # Pencarian title membatasi judul karya, bukan artikel yang membahasnya.
+        # Rekaman yang tidak memiliki kemiripan judul memadai tidak ditampilkan.
+        nilai = skor(query, title)
+        qwords = set(normal(query).split())
+        twords = set(normal(title).split())
+        cakupan = len(qwords & twords) / max(len(qwords), 1)
+        if nilai < 38 and cakupan < 0.65:
+            continue
+        subjects = ' '.join(item.get('subject', [])[:20]).casefold()
+        if jenis == 'Tafsir':
+            if not any(k in normal(title + ' ' + subjects) for k in ('tafsir', 'quran', 'qur an', 'koran', 'exegesis', 'commentary')):
+                continue
+        if jenis == 'Karya Ilmiah':
+            if not any(k in normal(title + ' ' + subjects) for k in ('thesis', 'dissertation', 'skripsi', 'tesis', 'disertasi', 'academic', 'research')):
+                continue
+        key = item.get('key', '')
+        hasil.append({'judul': title, 'penulis': ', '.join(item.get('author_name', [])[:5]),
+            'tahun': str(item.get('first_publish_year', '-')),
+            'penerbit': ', '.join(item.get('publisher', [])[:2]), 'doi': '',
+            'url': 'https://openlibrary.org' + key if key.startswith('/') else '',
+            'sumber': 'Open Library (rekaman karya)', 'jenis': jenis,
+            'kemiripan': nilai})
+    return sorted(hasil, key=lambda x: x['kemiripan'], reverse=True)[:12]
 
 def simpan_kandidat(item):
     key = (item.get('sumber'), item.get('doi') or item.get('url') or item.get('judul'))
@@ -201,7 +263,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.4 | Pencarian katalog, bank sumber sesi, unggah sumber asli, dan perbandingan teks awal. Generative AI belum terhubung.')
+st.info('Versi 0.5 | Pencarian berdasarkan jenis sumber, bank sumber sesi, unggah sumber asli, dan perbandingan teks awal. Generative AI belum terhubung.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -295,24 +357,26 @@ elif menu == '📤 Unggah Karya Ilmiah':
 elif menu.startswith('🔎 Validasi Literatur'):
     st.subheader(submenu)
     if submenu in ['Validasi Keaslian Literatur', 'Cari Sumber Asli Otomatis', 'Pencarian Referensi Pengganti']:
-        st.write('Cari metadata literatur Aswaja An-Nahdliyah pada katalog yang menyediakan API publik.')
-        katalog = st.selectbox('Katalog', ['Crossref', 'Open Library'], key=f'katalog_{submenu}')
+        st.write('Pencarian metadata dipisahkan menurut jenis literatur. Hasil katalog bukan bukti keaslian teks.')
+        jenis = st.selectbox('Jenis sumber', ['Kitab Klasik', 'Buku', 'Jurnal', 'Tafsir', 'Karya Ilmiah'], key=f'jenis_{submenu}')
+        katalog = 'Crossref' if jenis == 'Jurnal' else 'Open Library'
+        st.caption(f'Katalog utama: {katalog}. Filter jenis diterapkan sebelum hasil ditampilkan.')
         query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}')
         if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary'):
             if len(query.strip()) < 4:
                 st.warning('Masukkan minimal 4 karakter.')
             else:
                 try:
-                    with st.spinner('Mencari rekaman katalog...'):
-                        hasil = cari_katalog(query.strip(), katalog)
+                    with st.spinner('Mencari sumber sesuai kategori...'):
+                        hasil = cari_berdasarkan_jenis(query.strip(), jenis)
                     st.session_state.hasil_pencarian = hasil
-                    st.session_state['query_terakhir'] = (query.strip(), katalog, submenu)
+                    st.session_state['query_terakhir'] = (query.strip(), jenis, submenu)
                 except Exception as e:
                     st.session_state.hasil_pencarian = []
                     st.error(f'Katalog belum dapat dihubungi: {e}')
-        if st.session_state.get('query_terakhir', (None, None, None)) == (query.strip(), katalog, submenu):
+        if st.session_state.get('query_terakhir', (None, None, None)) == (query.strip(), jenis, submenu):
             tampil_kandidat(st.session_state.hasil_pencarian, 'kandidat_' + submenu)
-        st.warning('Pencarian metadata tidak otomatis mengunduh isi kitab. Teks lengkap harus tersedia secara sah untuk memeriksa kutipan dan halaman.')
+        st.warning('Pencarian metadata tidak otomatis mengunduh isi kitab. Edisi, pengarang, teks lengkap, kutipan, dan halaman harus diperiksa pada sumber asli.')
     elif submenu == 'Bank Referensi Aswaja An-Nahdliyah':
         st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini.')
         bank = st.session_state.bank_referensi
