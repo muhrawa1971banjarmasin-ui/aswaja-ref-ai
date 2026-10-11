@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.1'
+VERSI = '0.6.2'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -37,7 +37,7 @@ MENU = {
     '📊 Laporan Validasi': ['Ringkasan Hasil', 'Temuan Kesalahan', 'Rekomendasi Perbaikan', 'Unduh Laporan', 'Dokumentasi Pengembangan R&D'],
 }
 
-def baca_file(file):
+def baca_file(file, ubah_status_karya=True):
     """Mempertahankan teks asli dan pemisah halaman PDF; DOCX per paragraf."""
     data = BytesIO(file.getvalue())
     if file.name.lower().endswith('.docx'):
@@ -46,14 +46,16 @@ def baca_file(file):
         for table in doc.tables:
             for row in table.rows:
                 bagian.append(' | '.join(c.text.strip() for c in row.cells))
-        st.session_state.bagian_docx = bagian
-        st.session_state.jenis_dokumen = 'DOCX'
+        if ubah_status_karya:
+            st.session_state.bagian_docx = bagian
+            st.session_state.jenis_dokumen = 'DOCX'
         return '\n'.join(bagian), []
     if file.name.lower().endswith('.pdf'):
         reader = PdfReader(data)
         halaman = [(p.extract_text() or '') for p in reader.pages]
-        st.session_state.bagian_docx = []
-        st.session_state.jenis_dokumen = 'PDF'
+        if ubah_status_karya:
+            st.session_state.bagian_docx = []
+            st.session_state.jenis_dokumen = 'PDF'
         return '\n'.join(halaman), halaman
     raise ValueError('Hanya PDF atau DOCX yang didukung.')
 
@@ -409,7 +411,7 @@ def cari_katalog(query, sumber):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({'query.title': query, 'rows': 8})
     else:
         url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode({'q': query, 'limit': 8})
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.5 (research prototype)', 'Accept': 'application/json'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.6.2 (research prototype)', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -471,7 +473,7 @@ def cari_archive(query, jumlah=12):
               ('fl[]', 'creator'), ('fl[]', 'date'), ('fl[]', 'publisher'),
               ('fl[]', 'language')]
     url = 'https://archive.org/advancedsearch.php?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent':'ASWAJA-REF-AI/0.5.5 research'})
+    req = urllib.request.Request(url, headers={'User-Agent':'ASWAJA-REF-AI/0.6.2 research'})
     with urllib.request.urlopen(req, timeout=20) as response:
         data = json.load(response)
     hasil=[]
@@ -513,7 +515,7 @@ def cari_berdasarkan_jenis(query, jenis):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({
             'query.title': query, 'filter': 'type:journal-article', 'rows': 30
         })
-        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.5 (research prototype)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.6.2 (research prototype)'})
         with urllib.request.urlopen(req, timeout=18) as response:
             data = json.load(response)
         hasil = []
@@ -536,7 +538,7 @@ def cari_berdasarkan_jenis(query, jenis):
     # pengarang serta edisi tetap harus dikonfirmasi secara manual.
     params = {'title': query, 'limit': 40, 'fields': 'key,title,author_name,first_publish_year,publisher,subject,edition_count,language'}
     url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.5 (research prototype)'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.6.2 (research prototype)'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -625,7 +627,7 @@ def tampil_kandidat(items, prefix):
     st.caption('Katalog hanya menyediakan metadata. Teks lengkap, relevansi Aswaja An-Nahdliyah, kutipan, dan halaman belum otomatis terbukti.')
 
 def simpan_sumber(file, judul, edisi):
-    teks, halaman = baca_file(file)
+    teks, halaman = baca_file(file, ubah_status_karya=False)
     if not teks.strip():
         raise ValueError('Tidak ditemukan teks yang dapat dibaca. PDF hasil scan mungkin memerlukan OCR.')
     sumber = {'id': f"{file.name}:{len(file.getvalue())}:{judul}", 'judul': judul or file.name,
@@ -737,7 +739,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.6.1 | Validasi sumber Aswaja An-Nahdliyah dan penyusunan sitasi dari metadata yang diperiksa pengguna.')
+st.info('Versi 0.6.2 | Validasi sumber Aswaja An-Nahdliyah dan penyusunan sitasi dari metadata yang diperiksa pengguna.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -870,8 +872,8 @@ elif menu.startswith('🔎 Validasi Literatur'):
                 st.session_state[penanda_kunci] = sumber_pilihan
         query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}', disabled=not izin_validasi)
         if not izin_validasi:
-            st.stop()
-        if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary'):
+            st.info('Pencarian untuk validasi referensi karya ilmiah menunggu konfirmasi sumber Aswaja An-Nahdliyah. Unggah Sumber Asli dan Bank Referensi tetap dapat digunakan secara mandiri.')
+        if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary', disabled=not izin_validasi):
             if len(query.strip()) < 4:
                 st.warning('Masukkan minimal 4 karakter.')
             else:
@@ -903,7 +905,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
             tampil_rujukan_kitab(query.strip())
         st.warning('Hasil katalog belum membuktikan keaslian teks, relevansi Aswaja An-Nahdliyah, atau ketepatan halaman. Jika katalog gagal, gunakan tautan pembanding dan unggah sumber asli.')
     elif submenu == 'Bank Referensi Aswaja An-Nahdliyah':
-        st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini.')
+        st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini. Data ini merupakan sumber kandidat, bukan otomatis kitab yang telah divalidasi ahli.')
         bank = st.session_state.bank_referensi
         st.metric('Sumber dalam sesi', len(bank))
         if not bank:
@@ -917,7 +919,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
                 if st.button('Gunakan untuk pemeriksaan', key=f'pilihbank_{i}'):
                     st.session_state.sumber_aktif = sumber['id']
                     st.success('Sumber dipilih.')
-        st.warning('Bank ini belum permanen. Dokumen dapat hilang ketika sesi berakhir atau aplikasi dimulai ulang.')
+        st.warning('Bank ini belum permanen. Dokumen dapat hilang ketika sesi berakhir atau aplikasi dimulai ulang. Jangan gunakan sebagai arsip induk kitab yang sudah tervalidasi.')
     elif submenu == 'Unggah Sumber Asli':
         st.write('Unggah PDF/DOCX kitab, buku, atau artikel Aswaja An-Nahdliyah yang Anda berhak gunakan.')
         file = st.file_uploader('Pilih sumber asli', type=['pdf', 'docx'], key='sumber_asli')
@@ -932,7 +934,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
                     st.success('Sumber terbaca dan disimpan untuk sesi ini: ' + sumber['judul'])
                 except Exception as e:
                     st.error(f'Gagal memproses sumber: {e}')
-        st.caption('File tidak disimpan ke database permanen. PDF scan tanpa lapisan teks belum didukung.')
+        st.caption('File tidak disimpan ke database permanen. PDF scan tanpa lapisan teks belum didukung. Mengunggah sumber tidak mengubah status karya ilmiah yang sedang dianalisis.')
     elif submenu == 'Validasi Kesesuaian Kutipan':
         st.markdown('### Tahap 1. Kutipan dan sumber sebagaimana tertulis dalam tesis')
         data_kutipan = tampilkan_kutipan_tesis()
@@ -1007,6 +1009,7 @@ elif menu == '📝 Sitasi Otomatis':
                 x = kandidat[pilih-1]
                 st.session_state.sitasi_metadata = {'penulis': x.get('penulis',''), 'judul': x.get('judul',''), 'tahun': str(x.get('tahun','')).replace('-', ''), 'penerbit': x.get('penerbit',''), 'kota': '', 'halaman': '', 'url': x.get('url',''), 'doi': x.get('doi',''), 'jilid': '', 'edisi': ''}
                 st.rerun()
+        data = st.session_state.get('sitasi_metadata', {})
         with st.form('form_sitasi_061'):
             penulis = st.text_input('Penulis / pengarang (urut sesuai sumber)', value=data.get('penulis',''))
             judul = st.text_input('Judul sumber', value=data.get('judul',''))
@@ -1051,9 +1054,9 @@ elif menu == '📊 Laporan Validasi':
         st.metric('Metadata kandidat', len(st.session_state.riwayat_validasi))
         st.metric('Sumber sesi', len(st.session_state.bank_referensi))
     elif submenu == 'Unduh Laporan':
-        st.download_button('📥 Unduh Laporan Pemeriksaan Awal', laporan().encode('utf-8-sig'), file_name='laporan_aswaja_ref_ai_v061.txt', mime='text/plain')
+        st.download_button('📥 Unduh Laporan Pemeriksaan Awal', laporan().encode('utf-8-sig'), file_name='laporan_aswaja_ref_ai_v062.txt', mime='text/plain')
     elif submenu == 'Dokumentasi Pengembangan R&D':
-        st.markdown('**R&D ADDIE — Development V0.6.1**\n\n- Penelusuran metadata Crossref dan Open Library.\n- Unggah sumber asli PDF/DOCX.\n- Bank referensi sementara per sesi.\n- Pencocokan awal kutipan dengan teks sumber.\n- Pemeriksaan teks per halaman PDF.\n- Laporan pemeriksaan awal.\n\n**Belum tersedia:** AI/RAG, database permanen, OCR, validasi edisi/halaman cetakan otomatis, dan validasi sitasi otomatis penuh (generator draf sudah tersedia).')
+        st.markdown('**R&D ADDIE — Development V0.6.2**\n\n- Penelusuran metadata Crossref dan Open Library.\n- Unggah sumber asli PDF/DOCX.\n- Bank referensi sementara per sesi.\n- Pencocokan awal kutipan dengan teks sumber.\n- Pemeriksaan teks per halaman PDF.\n- Laporan pemeriksaan awal.\n\n**Belum tersedia:** AI/RAG, database permanen, OCR, validasi edisi/halaman cetakan otomatis, dan validasi sitasi otomatis penuh (generator draf sudah tersedia).')
     else:
         st.info('Kesalahan dan rekomendasi yang dapat dipertanggungjawabkan memerlukan pemeriksaan lebih lanjut terhadap sumber asli.')
 
