@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.5.3'
+VERSI = '0.5.4'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -19,7 +19,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None,
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [],
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -56,6 +56,48 @@ def deteksi_kutipan(teks):
     pola = r'\([^()\n]{2,90}?,\s*(?:19|20)\d{2}(?:\s*[:,]\s*[^()\n]{1,25})?\)'
     return list(dict.fromkeys(re.findall(pola, teks)))
 
+def ekstrak_kutipan_langsung(teks):
+    """Kutipan bertanda petik, tidak menebak isi sumber asli."""
+    pola = r'[“\"]([^“”\"\n]{20,1500})[”\"]|‘([^‘’\n]{20,1500})’'
+    hasil = []
+    for m in re.finditer(pola, teks):
+        kutipan = next((x for x in m.groups() if x), '')
+        sekitar = teks[max(0, m.start()-400):min(len(teks),m.end()+500)]
+        hasil.append({'teks': kutipan, 'konteks': sekitar, 'posisi': m.start()})
+    return hasil[:300]
+
+def pasangan_referensi(konteks, pustaka):
+    """Usulan pasangan saja; tidak dianggap sebagai identitas terverifikasi."""
+    hasil=[]
+    konteks_normal=normal(konteks)
+    for entri in pustaka:
+        awal=entri.split('(')[0].split(',')[0].strip()
+        token=[x for x in normal(awal).split() if len(x)>3]
+        if token and any(x in konteks_normal.split() for x in token):
+            hasil.append(entri)
+    return hasil[:5]
+
+def tampilkan_kutipan_tesis():
+    if not st.session_state.hasil_baca:
+        st.info('Unggah dan baca tesis terlebih dahulu.');return None
+    kutipan=st.session_state.get('kutipan_langsung', [])
+    st.write('**Dokumen:**',st.session_state.nama_dokumen)
+    st.metric('Kutipan langsung terdeteksi',len(kutipan))
+    if not kutipan:
+        st.warning('Belum terdeteksi kutipan langsung bertanda petik. Anda dapat menggunakan pemeriksaan manual yang sudah tersedia.');return None
+    nomor=st.selectbox('Pilih kutipan dari tesis',range(len(kutipan)),format_func=lambda i:f'Kutipan {i+1}: {kutipan[i]["teks"][:90]}',key='pilih_kutipan_tesis')
+    data=kutipan[nomor]
+    st.text_area('Kutipan asli dalam tesis (tidak diubah)',data['teks'],height=130,disabled=True)
+    st.text_area('Konteks kutipan dalam tesis',data['konteks'],height=150,disabled=True)
+    pasangan=pasangan_referensi(data['konteks'],st.session_state.daftar_pustaka)
+    if pasangan:
+        st.write('**Kemungkinan sumber yang tercantum dalam daftar pustaka:**')
+        for ref in pasangan:st.write('- '+ref)
+        st.caption('Pasangan referensi masih dugaan berdasarkan nama. Periksa catatan kaki dan daftar pustaka sebelum validasi.')
+    else:
+        st.warning('Sumber kutipan belum dapat dipasangkan dengan daftar pustaka secara pasti. Catatan kaki DOCX belum diekstrak secara khusus.')
+    return data
+
 def deteksi_pustaka(teks):
     m = list(re.finditer(r'(?im)^\s*(?:daftar pustaka|bibliografi|references)\s*$', teks))
     if not m:
@@ -78,7 +120,7 @@ def cari_katalog(query, sumber):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({'query.title': query, 'rows': 8})
     else:
         url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode({'q': query, 'limit': 8})
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.3 (research prototype)', 'Accept': 'application/json'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.4 (research prototype)', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -140,7 +182,7 @@ def cari_archive(query, jumlah=12):
               ('fl[]', 'creator'), ('fl[]', 'date'), ('fl[]', 'publisher'),
               ('fl[]', 'language')]
     url = 'https://archive.org/advancedsearch.php?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent':'ASWAJA-REF-AI/0.5.3 research'})
+    req = urllib.request.Request(url, headers={'User-Agent':'ASWAJA-REF-AI/0.5.4 research'})
     with urllib.request.urlopen(req, timeout=20) as response:
         data = json.load(response)
     hasil=[]
@@ -182,7 +224,7 @@ def cari_berdasarkan_jenis(query, jenis):
         url = 'https://api.crossref.org/works?' + urllib.parse.urlencode({
             'query.title': query, 'filter': 'type:journal-article', 'rows': 30
         })
-        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.3 (research prototype)'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.4 (research prototype)'})
         with urllib.request.urlopen(req, timeout=18) as response:
             data = json.load(response)
         hasil = []
@@ -205,7 +247,7 @@ def cari_berdasarkan_jenis(query, jenis):
     # pengarang serta edisi tetap harus dikonfirmasi secara manual.
     params = {'title': query, 'limit': 40, 'fields': 'key,title,author_name,first_publish_year,publisher,subject,edition_count,language'}
     url = 'https://openlibrary.org/search.json?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.3 (research prototype)'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'ASWAJA-REF-AI/0.5.4 (research prototype)'})
     with urllib.request.urlopen(req, timeout=18) as response:
         data = json.load(response)
     hasil = []
@@ -366,7 +408,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.5.3 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
+st.info('Versi 0.5.4 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -410,6 +452,7 @@ elif menu == '📤 Unggah Karya Ilmiah':
                     st.session_state.isi_dokumen = teks
                     st.session_state.nama_dokumen = file.name
                     st.session_state.kutipan = deteksi_kutipan(teks)
+                    st.session_state.kutipan_langsung = ekstrak_kutipan_langsung(teks)
                     st.session_state.daftar_pustaka = deteksi_pustaka(teks)
                     st.session_state.hasil_baca = True
                     st.session_state.hasil_perbandingan = None
@@ -444,7 +487,8 @@ elif menu == '📤 Unggah Karya Ilmiah':
         if not st.session_state.hasil_baca:
             st.info('Unggah dokumen terlebih dahulu.')
         else:
-            st.metric('Kutipan Unik', len(st.session_state.kutipan))
+            tampilkan_kutipan_tesis()
+            st.metric('Sitasi penulis-tahun terdeteksi', len(st.session_state.kutipan))
             for i, k in enumerate(st.session_state.kutipan, 1):
                 st.write(f'{i}. {k}')
             st.caption('Deteksi masih terbatas pada pola kutipan penulis-tahun.')
@@ -528,9 +572,13 @@ elif menu.startswith('🔎 Validasi Literatur'):
                     st.error(f'Gagal memproses sumber: {e}')
         st.caption('File tidak disimpan ke database permanen. PDF scan tanpa lapisan teks belum didukung.')
     elif submenu == 'Validasi Kesesuaian Kutipan':
+        st.markdown('### Tahap 1. Kutipan dan sumber sebagaimana tertulis dalam tesis')
+        data_kutipan = tampilkan_kutipan_tesis()
+        st.markdown('### Tahap 2. Pemeriksaan terhadap sumber asli')
         sumber = pilih_sumber()
         if sumber:
-            kutipan = st.text_area('Tempel kutipan persis dari karya ilmiah (tanpa format sitasi)', height=130)
+            nilai_awal = data_kutipan['teks'] if data_kutipan else ''
+            kutipan = st.text_area('Kutipan yang akan dibandingkan (dapat menggunakan hasil deteksi)', value=nilai_awal, height=130, key='teks_validasi_054')
             if st.button('🔎 Bandingkan dengan Sumber Asli', type='primary'):
                 if len(kutipan.strip()) < 12:
                     st.warning('Masukkan kutipan minimal 12 karakter.')
@@ -562,6 +610,8 @@ elif menu.startswith('🔎 Validasi Literatur'):
             st.write(f"{i}. {item['penulis']} ({item['tahun']}). {item['judul']}. {item['penerbit']}. DOI: {item['doi'] or '-'}")
         st.warning('Metadata katalog belum tentu cocok dengan edisi yang dikutip mahasiswa.')
     else:
+        st.write('### Kutipan dalam tesis sebelum hasil validasi')
+        tampilkan_kutipan_tesis()
         st.write('### Hasil Pemeriksaan')
         st.metric('Kandidat metadata', len(st.session_state.riwayat_validasi))
         hasil = st.session_state.hasil_perbandingan
