@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.0'
+VERSI = '0.6.1'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -19,7 +19,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {},
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {}, 'sitasi_metadata': {}, 'sitasi_hasil': {},
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -674,6 +674,38 @@ def periksa_kutipan(kutipan, sumber):
         terbaik['status'] = 'Belum ditemukan kecocokan kuat'
     return terbaik
 
+def buat_sitasi_otomatis(d, gaya):
+    """Draf format bibliografi dari metadata terkonfirmasi; tidak menebak data kosong."""
+    p, j, t = d['penulis'], d['judul'], d['tahun']
+    pub, kota, h = d['penerbit'], d['kota'], d['halaman']
+    tambahan = ', '.join(x for x in [f"jil. {d['jilid']}" if d['jilid'] else '', d['edisi']] if x)
+    alamat = d['doi'] and ('https://doi.org/' + d['doi'].removeprefix('https://doi.org/')) or d['url']
+    if gaya == 'Chicago Notes and Bibliography':
+        detail = ', '.join(x for x in [kota, pub, t] if x)
+        terbit = f" ({detail})" if detail else ''
+        foot = f"{p}, {j}{', ' + tambahan if tambahan else ''}{terbit}{', ' + h if h else ''}."
+        bib = f"{p}. {j}{'. ' + tambahan if tambahan else ''}. {kota + ': ' if kota else ''}{pub}{', ' if pub and t else ''}{t}.".replace('..','.')
+        teks = f"({p.split(',')[0]}, {t}{', ' + h if h else ''})" if t else f"({p.split(',')[0]})"
+    elif gaya == 'APA Edisi 7':
+        bib = f"{p}. ({t or 't.t.'}). {j}{' (' + tambahan + ')' if tambahan else ''}. {pub}."
+        teks = f"({p.split(',')[0]}, {t or 't.t.'}{', hlm. ' + h if h else ''})"
+        foot = bib
+    elif gaya == 'MLA Edisi 9':
+        bib = f"{p}. {j}. {pub}{', ' + t if t else ''}."
+        teks = f"({p.split(',')[0]}{' ' + h if h else ''})"
+        foot = bib
+    elif gaya == 'Harvard':
+        bib = f"{p} ({t or 'n.d.'}) {j}. {kota + ': ' if kota else ''}{pub}."
+        teks = f"({p.split(',')[0]}, {t or 'n.d.'}{', p. ' + h if h else ''})"
+        foot = bib
+    else:
+        bib = f"[1] {p}, {j}{', ' + tambahan if tambahan else ''}. {kota + ': ' if kota else ''}{pub}{', ' + t if t else ''}."
+        teks = '[1]'
+        foot = bib
+    if alamat:
+        bib += ' ' + alamat
+    return {'gaya':gaya,'dalam_teks':teks,'catatan_kaki':foot,'daftar_pustaka':bib}
+
 def laporan():
     lines = ['ASWAJA REF-AI — LAPORAN PEMERIKSAAN AWAL', f'Versi {VERSI}', datetime.now().strftime('%d-%m-%Y'),
              'Dokumen: ' + (st.session_state.nama_dokumen or '-'),
@@ -705,7 +737,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.5.9 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
+st.info('Versi 0.6.1 | Validasi sumber Aswaja An-Nahdliyah dan penyusunan sitasi dari metadata yang diperiksa pengguna.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -957,13 +989,59 @@ elif menu.startswith('🔎 Validasi Literatur'):
 
 elif menu == '📝 Sitasi Otomatis':
     st.subheader(submenu)
+    gaya_tersedia = ['Chicago Notes and Bibliography', 'APA Edisi 7', 'MLA Edisi 9', 'Harvard', 'IEEE']
+    if st.session_state.gaya_sitasi not in gaya_tersedia:
+        st.session_state.gaya_sitasi = gaya_tersedia[0]
     if submenu == 'Pilihan Gaya Sitasi':
-        pilihan = ['Chicago Notes and Bibliography', 'APA Edisi 7']
-        st.session_state.gaya_sitasi = st.selectbox('Gaya Sitasi', pilihan, index=pilihan.index(st.session_state.gaya_sitasi))
-        st.info('Pilihan disimpan untuk sesi ini.')
-    else:
-        st.info('Fitur ini masih tahap pengembangan. Sitasi otomatis akan dibuat setelah pemeriksaan metadata edisi dan sumber asli.')
-    st.caption('Aplikasi tidak membuat nomor halaman, tahun, atau kutipan tanpa bukti sumber.')
+        st.session_state.gaya_sitasi = st.selectbox('Gaya Sitasi', gaya_tersedia,
+            index=gaya_tersedia.index(st.session_state.gaya_sitasi))
+        st.info('Pilihan gaya disimpan selama sesi. Sitasi hanya dibuat dari metadata yang dikonfirmasi.')
+    elif submenu in ['Perbaikan Kutipan', 'Perbaikan Catatan Kaki', 'Perbaikan Daftar Pustaka', 'Pratinjau Hasil']:
+        st.caption('Penyusunan draf sitasi; tidak mengubah dokumen asli dan tidak menganggap metadata sebagai terverifikasi otomatis.')
+        data = st.session_state.get('sitasi_metadata', {})
+        kandidat = st.session_state.get('riwayat_validasi', [])
+        if kandidat:
+            opsi = ['Isi metadata sendiri'] + [f"{x.get('judul', '-')} — {x.get('sumber', '-')}" for x in kandidat]
+            pilih = st.selectbox('Gunakan kandidat metadata (tetap perlu diperiksa)', range(len(opsi)), format_func=lambda i: opsi[i], key='sitasi_kandidat_061')
+            if pilih > 0 and st.button('Salin kandidat ke formulir', key='salin_sitasi_061'):
+                x = kandidat[pilih-1]
+                st.session_state.sitasi_metadata = {'penulis': x.get('penulis',''), 'judul': x.get('judul',''), 'tahun': str(x.get('tahun','')).replace('-', ''), 'penerbit': x.get('penerbit',''), 'kota': '', 'halaman': '', 'url': x.get('url',''), 'doi': x.get('doi',''), 'jilid': '', 'edisi': ''}
+                st.rerun()
+        with st.form('form_sitasi_061'):
+            penulis = st.text_input('Penulis / pengarang (urut sesuai sumber)', value=data.get('penulis',''))
+            judul = st.text_input('Judul sumber', value=data.get('judul',''))
+            tahun = st.text_input('Tahun terbit (jangan mengarang)', value=data.get('tahun',''))
+            penerbit = st.text_input('Penerbit', value=data.get('penerbit',''))
+            kota = st.text_input('Kota terbit (bila diperlukan)', value=data.get('kota',''))
+            edisi = st.text_input('Edisi / cetakan (bila ada)', value=data.get('edisi',''))
+            jilid = st.text_input('Jilid (bila ada)', value=data.get('jilid',''))
+            halaman = st.text_input('Halaman CETAK yang sudah diperiksa (bila ada)', value=data.get('halaman',''))
+            doi = st.text_input('DOI (bila ada)', value=data.get('doi',''))
+            url = st.text_input('Tautan sumber (bila ada)', value=data.get('url',''))
+            konfirmasi = st.checkbox('Saya sudah memeriksa metadata terhadap sumber yang digunakan', value=False)
+            buat = st.form_submit_button('📝 Buat Draf Sitasi')
+        if buat:
+            d = {'penulis':penulis.strip(), 'judul':judul.strip(), 'tahun':tahun.strip(), 'penerbit':penerbit.strip(), 'kota':kota.strip(), 'edisi':edisi.strip(), 'jilid':jilid.strip(), 'halaman':halaman.strip(), 'doi':doi.strip(), 'url':url.strip()}
+            st.session_state.sitasi_metadata = d
+            if not d['penulis'] or not d['judul']:
+                st.error('Penulis dan judul wajib diisi dari sumber yang nyata.')
+            elif not konfirmasi:
+                st.warning('Konfirmasi pemeriksaan metadata terlebih dahulu. Tidak ada sitasi yang diterbitkan sebagai hasil terverifikasi.')
+            else:
+                st.session_state.sitasi_hasil = buat_sitasi_otomatis(d, st.session_state.gaya_sitasi)
+                st.success('Draf sitasi dibuat. Periksa kembali tanda baca dan ketentuan kampus/jurnal sebelum digunakan.')
+        hasil = st.session_state.get('sitasi_hasil', {})
+        if hasil:
+            st.write('**Gaya hasil terakhir:**', hasil.get('gaya','-'))
+            st.text_area('Sitasi dalam teks', hasil.get('dalam_teks',''), height=85)
+            st.text_area('Catatan kaki / rujukan lengkap', hasil.get('catatan_kaki',''), height=110)
+            st.text_area('Daftar pustaka', hasil.get('daftar_pustaka',''), height=110)
+            st.download_button('📥 Unduh Draf Sitasi (.txt)',
+                ('Gaya: '+hasil.get('gaya','')+'\n\nSitasi dalam teks:\n'+hasil.get('dalam_teks','')+'\n\nCatatan kaki:\n'+hasil.get('catatan_kaki','')+'\n\nDaftar pustaka:\n'+hasil.get('daftar_pustaka','')).encode('utf-8-sig'),
+                file_name='draf_sitasi_aswaja_ref_ai.txt', mime='text/plain')
+        else:
+            st.info('Belum ada draf sitasi yang dibuat pada sesi ini.')
+    st.caption('Nomor halaman PDF tidak otomatis dianggap halaman cetak. Penyesuaian khusus kitab Arab dan standar jurnal tetap memerlukan pemeriksaan ahli.')
 
 elif menu == '📊 Laporan Validasi':
     st.subheader(submenu)
@@ -973,9 +1051,9 @@ elif menu == '📊 Laporan Validasi':
         st.metric('Metadata kandidat', len(st.session_state.riwayat_validasi))
         st.metric('Sumber sesi', len(st.session_state.bank_referensi))
     elif submenu == 'Unduh Laporan':
-        st.download_button('📥 Unduh Laporan Pemeriksaan Awal', laporan().encode('utf-8-sig'), file_name='laporan_aswaja_ref_ai_v055.txt', mime='text/plain')
+        st.download_button('📥 Unduh Laporan Pemeriksaan Awal', laporan().encode('utf-8-sig'), file_name='laporan_aswaja_ref_ai_v061.txt', mime='text/plain')
     elif submenu == 'Dokumentasi Pengembangan R&D':
-        st.markdown('**R&D ADDIE — Development V0.4**\n\n- Penelusuran metadata Crossref dan Open Library.\n- Unggah sumber asli PDF/DOCX.\n- Bank referensi sementara per sesi.\n- Pencocokan awal kutipan dengan teks sumber.\n- Pemeriksaan teks per halaman PDF.\n- Laporan pemeriksaan awal.\n\n**Belum tersedia:** AI/RAG, database permanen, OCR, validasi edisi/halaman cetakan otomatis, dan generator sitasi.')
+        st.markdown('**R&D ADDIE — Development V0.6.1**\n\n- Penelusuran metadata Crossref dan Open Library.\n- Unggah sumber asli PDF/DOCX.\n- Bank referensi sementara per sesi.\n- Pencocokan awal kutipan dengan teks sumber.\n- Pemeriksaan teks per halaman PDF.\n- Laporan pemeriksaan awal.\n\n**Belum tersedia:** AI/RAG, database permanen, OCR, validasi edisi/halaman cetakan otomatis, dan validasi sitasi otomatis penuh (generator draf sudah tersedia).')
     else:
         st.info('Kesalahan dan rekomendasi yang dapat dipertanggungjawabkan memerlukan pemeriksaan lebih lanjut terhadap sumber asli.')
 
