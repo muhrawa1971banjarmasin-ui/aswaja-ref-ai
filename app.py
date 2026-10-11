@@ -4,6 +4,7 @@ import difflib
 import urllib.request
 import urllib.parse
 from io import BytesIO
+from openpyxl import Workbook, load_workbook
 from datetime import datetime
 
 import streamlit as st
@@ -11,7 +12,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.2'
+VERSI = '0.6.3'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -19,7 +20,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {}, 'sitasi_metadata': {}, 'sitasi_hasil': {},
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {}, 'sitasi_metadata': {}, 'sitasi_hasil': {}, 'katalog_impor': [], 'laporan_impor': [],
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -36,6 +37,81 @@ MENU = {
     '📝 Sitasi Otomatis': ['Pilihan Gaya Sitasi', 'Perbaikan Kutipan', 'Perbaikan Catatan Kaki', 'Perbaikan Daftar Pustaka', 'Pratinjau Hasil'],
     '📊 Laporan Validasi': ['Ringkasan Hasil', 'Temuan Kesalahan', 'Rekomendasi Perbaikan', 'Unduh Laporan', 'Dokumentasi Pengembangan R&D'],
 }
+
+# Format impor-ekspor identik dengan template Bank Referensi Aswaja An-Nahdliyah.
+KOLOM_BANK = {
+    'Petunjuk': ['Bagian', 'Ketentuan', 'Catatan'],
+    'Katalog Induk Kitab': ['ID Sumber', 'Jenis Sumber', 'Judul Arab', 'Judul Latin', 'Judul Alternatif', 'Pengarang', 'Muhaqqiq / Editor', 'Penerjemah', 'Penerbit', 'Kota Terbit', 'Tahun Terbit', 'Cetakan / Edisi', 'Jilid', 'Bahasa', 'ISBN / DOI', 'URL Katalog', 'URL Teks Asli', 'Nama File PDF', 'Jumlah Halaman PDF', 'Halaman Awal Cetak', 'Status Metadata', 'Pemeriksa', 'Tanggal Periksa', 'Catatan'],
+    'Bukti Kutipan': ['ID Bukti', 'ID Sumber', 'ID Kutipan Mahasiswa', 'Teks Asli Arab / Sumber', 'Transliterasi', 'Terjemahan', 'Konteks Sebelum', 'Konteks Sesudah', 'Jilid', 'Halaman Cetak', 'Halaman PDF', 'Lokasi Bab / Pasal', 'URL Langsung ke Bukti', 'Metode Ekstraksi', 'Status Pemeriksaan Teks', 'Status Pemeriksaan Halaman', 'Pemeriksa', 'Tanggal Periksa', 'Catatan'],
+    'Validasi Footnote': ['ID Validasi', 'Nama Dokumen', 'BAB / Bagian', 'Halaman Dokumen', 'Nomor Footnote', 'Jenis Kutipan', 'Teks Kutipan Mahasiswa', 'Teks Footnote Asli', 'ID Sumber Kandidat', 'ID Bukti Kandidat', 'Cocok Teks', 'Cocok Makna', 'Cocok Pengarang / Judul', 'Cocok Edisi / Jilid', 'Cocok Halaman Cetak', 'Status Validasi', 'Alasan / Bukti', 'Usulan Perbaikan', 'Persetujuan Pengguna', 'Validator', 'Tanggal'],
+    'Riwayat Pemeriksaan': ['ID Peristiwa', 'Tanggal Waktu', 'Objek (Sumber / Bukti / Kutipan)', 'ID Objek', 'Aksi', 'Hasil Sebelumnya', 'Hasil Baru', 'Pelaksana / AI', 'Model AI (jika ada)', 'Versi Prompt', 'Tautan Bukti', 'Catatan'],
+}
+
+def template_bank_excel():
+    wb = Workbook()
+    wb.remove(wb.active)
+    from openpyxl.styles import Font, PatternFill, Alignment
+    for nama, kolom in KOLOM_BANK.items():
+        ws = wb.create_sheet(nama)
+        ws.append(kolom)
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = f'A1:{ws.cell(1,len(kolom)).column_letter}501'
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color='FFFFFF')
+            cell.fill = PatternFill('solid', fgColor='176A54')
+            cell.alignment = Alignment(wrap_text=True)
+        ws.row_dimensions[1].height = 36
+        for i in range(1,len(kolom)+1):
+            ws.column_dimensions[ws.cell(1,i).column_letter].width = 24
+    ws = wb['Petunjuk']
+    ws.append(['Pengisian', 'Isi satu kitab atau edisi per baris pada Katalog Induk Kitab.', 'Gunakan ID Sumber yang unik; jilid dan edisi berbeda boleh dicatat terpisah.'])
+    ws.append(['Impor', 'Unggah kembali file XLSX melalui Bank Referensi Aswaja An-Nahdliyah.', 'Baris yang tidak lengkap dilaporkan tanpa menggagalkan baris lain.'])
+    ws.append(['Validasi', 'Impor tidak berarti sumber sudah diverifikasi.', 'Status metadata dari berkas tidak otomatis menjadi status valid.'])
+    ws.append(['PDF', 'Nama File PDF hanya metadata, bukan unggahan berkas.', 'Unggah PDF/DOCX melalui submenu Unggah Sumber Asli.'])
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+def impor_bank_excel(file_bytes, katalog_lama):
+    wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    wajib = 'Katalog Induk Kitab'
+    if wajib not in wb.sheetnames:
+        raise ValueError('Lembar Katalog Induk Kitab tidak ditemukan.')
+    ws = wb[wajib]
+    rows = ws.iter_rows(values_only=True)
+    header = [str(x).strip() if x is not None else '' for x in next(rows)]
+    if header != KOLOM_BANK[wajib]:
+        raise ValueError('Format kolom berbeda dari template aplikasi. Unduh template terbaru lalu isi ulang.')
+    existing_ids = {str(r.get('ID Sumber','')).strip().casefold() for r in katalog_lama}
+    existing_editions = {tuple(str(r.get(k,'')).strip().casefold() for k in ['Judul Arab','Judul Latin','Pengarang','Penerbit','Tahun Terbit','Cetakan / Edisi','Jilid']) for r in katalog_lama}
+    added, errors = [], []
+    for no, row in enumerate(rows,2):
+        if not any(v is not None and str(v).strip() for v in row):
+            continue
+        item = {k: str(v).strip() if v is not None else '' for k,v in zip(header,row)}
+        if not (item.get('Judul Arab') or item.get('Judul Latin')):
+            errors.append(f'Baris {no}: Judul Arab atau Judul Latin wajib diisi.')
+            continue
+        if not item.get('Pengarang'):
+            errors.append(f'Baris {no}: Pengarang wajib diisi.')
+            continue
+        ident = item.get('ID Sumber','').casefold()
+        if not ident:
+            errors.append(f'Baris {no}: ID Sumber wajib diisi.')
+            continue
+        edition = tuple(item.get(k,'').casefold() for k in ['Judul Arab','Judul Latin','Pengarang','Penerbit','Tahun Terbit','Cetakan / Edisi','Jilid'])
+        if ident in existing_ids:
+            errors.append(f'Baris {no}: ID Sumber {item["ID Sumber"]} sudah digunakan.')
+            continue
+        if edition in existing_editions:
+            errors.append(f'Baris {no}: kombinasi kitab, pengarang, penerbit, tahun, edisi dan jilid sudah ada.')
+            continue
+        item['Status Metadata'] = 'Belum terverifikasi (hasil impor)'
+        added.append(item)
+        existing_ids.add(ident)
+        existing_editions.add(edition)
+    wb.close()
+    return added, errors
 
 def baca_file(file, ubah_status_karya=True):
     """Mempertahankan teks asli dan pemisah halaman PDF; DOCX per paragraf."""
@@ -906,6 +982,31 @@ elif menu.startswith('🔎 Validasi Literatur'):
         st.warning('Hasil katalog belum membuktikan keaslian teks, relevansi Aswaja An-Nahdliyah, atau ketepatan halaman. Jika katalog gagal, gunakan tautan pembanding dan unggah sumber asli.')
     elif submenu == 'Bank Referensi Aswaja An-Nahdliyah':
         st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini. Data ini merupakan sumber kandidat, bukan otomatis kitab yang telah divalidasi ahli.')
+        st.markdown('#### Ekspor–Impor Massal Bank Referensi')
+        st.download_button('⬇️ Unduh Template Excel (5 lembar kerja)', data=template_bank_excel(), file_name='Template_Bank_Referensi_Aswaja_An_Nahdliyah.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='unduh_template_bank')
+        st.caption('Isi ratusan baris katalog di Excel, lalu impor kembali file yang sama. Kolom dan urutan harus dipertahankan.')
+        file_impor = st.file_uploader('⬆️ Impor Template Excel yang sudah diisi', type=['xlsx'], key='impor_template_bank')
+        if st.button('📥 Periksa dan Impor Data', key='proses_impor_bank', type='primary'):
+            if not file_impor:
+                st.warning('Pilih file Excel terlebih dahulu.')
+            else:
+                try:
+                    baru, galat = impor_bank_excel(file_impor.getvalue(), st.session_state.katalog_impor)
+                    st.session_state.katalog_impor.extend(baru)
+                    st.session_state.laporan_impor = galat
+                    st.success(f'{len(baru)} entri katalog berhasil diimpor sebagai kandidat belum terverifikasi.')
+                    if galat:
+                        st.warning(f'{len(galat)} baris dilewati; periksa rincian di bawah.')
+                except Exception as exc:
+                    st.error(f'Impor gagal: {exc}')
+        st.metric('Entri katalog hasil impor (sesi ini)', len(st.session_state.katalog_impor))
+        if st.session_state.laporan_impor:
+            with st.expander('Laporan baris yang perlu diperbaiki'):
+                for pesan in st.session_state.laporan_impor:
+                    st.write('- ' + pesan)
+        if st.session_state.katalog_impor:
+            st.dataframe(st.session_state.katalog_impor, use_container_width=True, hide_index=True)
+        st.info('Impor katalog belum mengunggah file PDF dan belum mengesahkan sumber. Data saat ini tersimpan selama sesi Streamlit, belum di database permanen.')
         bank = st.session_state.bank_referensi
         st.metric('Sumber dalam sesi', len(bank))
         if not bank:
