@@ -11,7 +11,7 @@ from docx import Document
 from pypdf import PdfReader
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.5.8'
+VERSI = '0.6.0'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -19,7 +19,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '',
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {},
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -32,7 +32,7 @@ MENU = {
         'Validasi Keaslian Literatur', 'Cari Sumber Asli Otomatis',
         'Bank Referensi Aswaja An-Nahdliyah', 'Unggah Sumber Asli',
         'Validasi Kesesuaian Kutipan', 'Pemeriksaan Halaman Kutipan',
-        'Validasi Bibliografi', 'Pencarian Referensi Pengganti', 'Hasil Validasi'],
+        'Validasi Bibliografi', 'Pencarian Referensi Pengganti', 'Rekomendasi Kutipan & Referensi Aswaja An-Nahdliyah', 'Hasil Validasi'],
     '📝 Sitasi Otomatis': ['Pilihan Gaya Sitasi', 'Perbaikan Kutipan', 'Perbaikan Catatan Kaki', 'Perbaikan Daftar Pustaka', 'Pratinjau Hasil'],
     '📊 Laporan Validasi': ['Ringkasan Hasil', 'Temuan Kesalahan', 'Rekomendasi Perbaikan', 'Unduh Laporan', 'Dokumentasi Pengembangan R&D'],
 }
@@ -263,6 +263,139 @@ def deteksi_pustaka(teks):
     if stop:
         bagian = bagian[:stop.start()]
     return [b.strip() for b in bagian.splitlines() if b.strip()][:500]
+
+def saring_referensi_aswaja(pustaka, halaman, jenis_dokumen):
+    """Penyaringan awal konservatif; bukan penetapan otoritas kitab secara otomatis."""
+    catatan = ekstrak_catatan_kaki_pdf(halaman) if halaman else []
+    daftar = ([{'teks': x, 'asal': 'Daftar pustaka'} for x in pustaka] +
+             [{'teks': x['teks'], 'asal': f"Catatan kaki kandidat {x['nomor']} (PDF {x['halaman_pdf']})"} for x in catatan])
+    penanda = [
+        r'aswaja', r'an[- ]nahdliy', r'nahdlatul ulama', r'\bnu\b',
+        r'al[- ]ghazal', r'al[- ]nawaw', r'asy[- ]syafi', r'al[- ]syafi',
+        r'ibn hajar', r'ibnu hajar', r'ibn katsir', r'ibnu katsir',
+        r'ihya[’\' ]+ulum', r'إحياء علوم الدين', r'فتح المعين',
+        r'fathul mu[’\']in', r'فتح القريب', r'fathul qarib',
+        r'tafsir jalalain', r'تفسير الجلالين', r'عقيدة العوام',
+        r'aqidatul awam', r'سفينة النجاة', r'safinatun najah',
+        r'رسالة أهل السنة', r'risalah ahlussunnah', r'النووي', r'الغزالي',
+        r'الشافعي', r'الأشعري', r'الماتريدي', r'ash[’\']ari', r'maturidi',
+        r'kitab kuning', r'ahlussunnah wal jama',
+    ]
+    cocok, tinjau = [], []
+    seen = set()
+    for item in daftar:
+        teks = item['teks'].strip()
+        if len(teks) < 9 or teks.casefold() in seen:
+            continue
+        seen.add(teks.casefold())
+        if any(re.search(p, teks, re.I) for p in penanda):
+            cocok.append(item)
+        else:
+            tinjau.append(item)
+    if cocok:
+        status = 'ditemukan'
+    elif tinjau:
+        status = 'perlu_tinjau'
+    elif jenis_dokumen == 'DOCX':
+        status = 'belum_pasti'  # Catatan kaki DOCX belum didukung.
+    else:
+        status = 'tidak_ditemukan'
+    return {'status': status, 'cocok': cocok, 'tinjau': tinjau, 'catatan': len(catatan)}
+
+
+def tampil_saringan_aswaja():
+    if not st.session_state.hasil_baca:
+        st.info('Unggah dan baca karya ilmiah terlebih dahulu sebelum validasi.')
+        return False
+    data = st.session_state.get('saringan_aswaja', {})
+    status = data.get('status', 'belum_pasti')
+    if status == 'ditemukan':
+        st.success(f"Ditemukan {len(data.get('cocok', []))} kandidat literatur atau referensi Aswaja An-Nahdliyah. Identitas sumber perlu dikonfirmasi sebelum validasi.")
+        return True
+    if status == 'tidak_ditemukan':
+        st.warning('Tidak ditemukan literatur atau referensi Aswaja An-Nahdliyah pada hasil ekstraksi. Proses validasi tidak dilanjutkan.')
+    else:
+        st.warning('Referensi Aswaja An-Nahdliyah belum dapat dipastikan dari hasil pembacaan. Periksa daftar pustaka atau catatan kaki sebelum validasi; proses otomatis belum dilanjutkan.')
+        if data.get('tinjau'):
+            with st.expander('Lihat referensi yang perlu diperiksa'):
+                for item in data['tinjau'][:100]:
+                    st.write(f"{item['asal']}: {item['teks']}")
+    return False
+
+def kandidat_narasi_rekomendasi(teks, halaman):
+    """Kandidat paragraf karya ilmiah, bukan kutipan atau rekomendasi yang sudah tervalidasi."""
+    hasil = []
+    if halaman:
+        sumber = [(i + 1, h) for i, h in enumerate(halaman)]
+    else:
+        sumber = [(None, teks)]
+    for nomor, isi in sumber:
+        for bagian in re.split(r'\n\s*\n|(?<=\.)\s*\n', isi):
+            bagian = ' '.join(bagian.split())
+            if not 110 <= len(bagian) <= 1800:
+                continue
+            if re.search(r'^(?:daftar pustaka|bibliografi|references|lampiran|abstract|abstrak)\b', bagian, re.I):
+                continue
+            if len(bagian.split()) < 18:
+                continue
+            hasil.append({'narasi': bagian, 'halaman_pdf': nomor})
+            if len(hasil) >= 250:
+                return hasil
+    return hasil
+
+
+def tampil_rekomendasi_aswaja():
+    st.markdown('### Rekomendasi Kutipan & Referensi Aswaja An-Nahdliyah')
+    st.caption('Submenu penyusunan usulan berdasarkan narasi asli; tidak otomatis mengubah karya ilmiah atau mengklaim validitas sumber.')
+    if not st.session_state.hasil_baca:
+        st.info('Unggah dan baca karya ilmiah terlebih dahulu.')
+        return
+    status = st.session_state.get('saringan_aswaja', {}).get('status')
+    if status == 'tidak_ditemukan':
+        st.info('Belum ditemukan referensi Aswaja An-Nahdliyah. Validasi referensi lama tetap dihentikan; Anda dapat menyiapkan rekomendasi baru di sini.')
+    elif status in ('perlu_tinjau', 'belum_pasti'):
+        st.warning('Identifikasi referensi awal belum pasti. Rekomendasi di sini bukan bukti bahwa tesis tidak memiliki sumber Aswaja An-Nahdliyah.')
+    else:
+        st.success('Ada kandidat referensi Aswaja An-Nahdliyah. Submenu ini juga dapat dipakai untuk usulan penguatan narasi.')
+    pilihan_jumlah = st.selectbox('Jumlah rekomendasi yang ditargetkan', ['Otomatis', 5, 10, 15, 20, 30], key='target_rekomendasi_060')
+    st.caption('Target bukan kuota wajib. Jumlah rekomendasi valid ditentukan oleh bukti sumber yang berhasil diperiksa.')
+    kandidat = kandidat_narasi_rekomendasi(st.session_state.isi_dokumen, st.session_state.get('halaman_tesis', []))
+    if not kandidat:
+        st.warning('Belum ada paragraf yang cukup jelas untuk dipilih. Periksa hasil ekstraksi dokumen.')
+        return
+    batas = len(kandidat) if pilihan_jumlah == 'Otomatis' else min(int(pilihan_jumlah), len(kandidat))
+    st.write(f'Paragraf kandidat terbaca: {len(kandidat)}. Pilih narasi yang benar-benar membutuhkan penguatan referensi.')
+    nomor = st.selectbox('Pilih narasi dari karya ilmiah', range(len(kandidat)), format_func=lambda i: f"Paragraf {i+1} | " + (f"PDF hlm. {kandidat[i]['halaman_pdf']} | " if kandidat[i]['halaman_pdf'] else 'DOCX | ') + kandidat[i]['narasi'][:90], key='narasi_rekomendasi_060')
+    item = kandidat[nomor]
+    st.text_area('Narasi asli (tidak diubah)', item['narasi'], height=180, disabled=True)
+    st.write('**Halaman karya ilmiah:**', f"PDF ke-{item['halaman_pdf']}" if item['halaman_pdf'] else 'Nomor halaman DOCX belum tersedia')
+    st.markdown('#### Usulan literatur untuk narasi ini')
+    judul = st.text_input('Judul kitab atau literatur Aswaja An-Nahdliyah kandidat', key=f'judul_usulan_060_{nomor}', placeholder='Isi dari sumber yang ditemukan, bukan judul buatan')
+    teks_kutipan = st.text_area('Kutipan sumber asli (hanya jika sudah dibaca dari kitab/buku)', key=f'kutipan_usulan_060_{nomor}', height=110)
+    footnote = st.text_area('Identitas sumber / footnote kandidat (pengarang, judul, edisi, halaman)', key=f'footnote_usulan_060_{nomor}', height=90)
+    sumber = st.session_state.get('bank_referensi', [])
+    if sumber:
+        st.caption('Untuk menguji kesesuaian teks, pilih sumber asli yang sudah diunggah ke Bank Referensi.')
+        pilih = st.selectbox('Sumber asli untuk pemeriksaan teks', range(len(sumber)), format_func=lambda i: sumber[i]['judul'], key=f'sumber_usulan_060_{nomor}')
+        if st.button('Periksa kutipan pada sumber yang diunggah', key=f'cek_usulan_060_{nomor}'):
+            if len(teks_kutipan.strip()) < 12:
+                st.warning('Masukkan teks kutipan sumber minimal 12 karakter.')
+            else:
+                hasil = periksa_kutipan(teks_kutipan.strip(), sumber[pilih])
+                st.session_state.rekomendasi_draf[str(nomor)] = {'narasi': item['narasi'], 'halaman_pdf': item['halaman_pdf'], 'judul': judul, 'kutipan': teks_kutipan, 'footnote': footnote, 'sumber': sumber[pilih]['judul'], 'hasil': hasil}
+                st.write('**Hasil pemeriksaan awal:**', hasil.get('status', 'Belum pasti'))
+                st.write('**Kemiripan teks:**', str(hasil.get('skor', 0)) + '%')
+                st.write('**Lokasi dalam sumber:**', hasil.get('lokasi', 'Belum ditemukan'))
+                st.warning('Pencocokan teks belum membuktikan ketepatan edisi, makna, dan halaman cetak. Lanjutkan ke Pemeriksaan Halaman Kutipan.')
+    else:
+        st.info('Belum ada sumber asli dalam sesi. Cari kandidat pada Pencarian Referensi Pengganti, lalu unggah PDF/DOCX sumber asli sebelum memvalidasi teks.')
+    if st.button('Simpan sebagai usulan belum terverifikasi', key=f'simpan_usulan_060_{nomor}'):
+        st.session_state.rekomendasi_draf[str(nomor)] = {'narasi': item['narasi'], 'halaman_pdf': item['halaman_pdf'], 'judul': judul, 'kutipan': teks_kutipan, 'footnote': footnote, 'status': 'Belum terverifikasi'}
+        st.success('Usulan tersimpan untuk sesi ini. Belum dinyatakan sebagai kutipan valid.')
+    st.metric('Usulan tersimpan dalam sesi', len(st.session_state.rekomendasi_draf))
+    st.caption(f'Target pilihan: {pilihan_jumlah}; batas tampilan usulan: {batas}. Jangan memasukkan rekomendasi ke karya ilmiah sebelum validasi teks, halaman dan persetujuan pengguna.')
+    st.markdown('**Tahap berikutnya:** Validasi Kesesuaian Kutipan → Pemeriksaan Halaman Kutipan → Hasil Validasi.')
+
 
 def normal(teks):
     return ' '.join(re.sub(r'[^\w\s]', ' ', teks.casefold()).split())
@@ -572,7 +705,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.5.8 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
+st.info('Versi 0.5.9 | Katalog terpisah, pembanding Internet Archive, dan tautan penelusuran kitab Arab. Validasi teks tetap memerlukan sumber asli.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -617,14 +750,17 @@ elif menu == '📤 Unggah Karya Ilmiah':
                     st.session_state.judul_terdeteksi = deteksi_judul_awal(teks)
                     st.session_state.identitas = {} if file.name != st.session_state.get('nama_dokumen') else st.session_state.identitas
                     st.session_state.pasangan_kutipan = {}
+                    st.session_state.rekomendasi_draf = {}
                     st.session_state.isi_dokumen = teks
                     st.session_state.nama_dokumen = file.name
                     st.session_state.kutipan = deteksi_kutipan(teks)
                     st.session_state.kutipan_langsung = ekstrak_kutipan_langsung(teks)
                     st.session_state.daftar_pustaka = deteksi_pustaka(teks)
+                    st.session_state.saringan_aswaja = saring_referensi_aswaja(st.session_state.daftar_pustaka, halaman_tesis, st.session_state.jenis_dokumen)
                     st.session_state.hasil_baca = True
                     st.session_state.hasil_perbandingan = None
                     st.success('Dokumen berhasil dibaca.')
+                    tampil_saringan_aswaja()
             except Exception as e:
                 st.error(f'Gagal membaca dokumen: {e}')
         if st.session_state.hasil_baca:
@@ -682,12 +818,27 @@ elif menu == '📤 Unggah Karya Ilmiah':
 
 elif menu.startswith('🔎 Validasi Literatur'):
     st.subheader(submenu)
+    if submenu == 'Rekomendasi Kutipan & Referensi Aswaja An-Nahdliyah':
+        tampil_rekomendasi_aswaja()
+    izin_validasi = tampil_saringan_aswaja() if submenu != 'Rekomendasi Kutipan & Referensi Aswaja An-Nahdliyah' else False
     if submenu in ['Validasi Keaslian Literatur', 'Cari Sumber Asli Otomatis', 'Pencarian Referensi Pengganti']:
         st.write('Pencarian metadata dipisahkan menurut jenis literatur. Hasil katalog bukan bukti keaslian teks.')
         jenis = st.selectbox('Jenis sumber', ['Kitab Klasik', 'Buku', 'Jurnal', 'Tafsir', 'Karya Ilmiah'], key=f'jenis_{submenu}')
         katalog = 'Crossref' if jenis == 'Jurnal' else ('Internet Archive dan katalog pembanding' if jenis in ('Kitab Klasik', 'Tafsir') else 'Open Library')
         st.caption(f'Katalog: {katalog}. Pencarian lintas situs tidak berarti semua situs menyediakan API.')
-        query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}')
+        pilihan = st.session_state.get('saringan_aswaja', {}).get('cocok', [])
+        if pilihan:
+            label_pilihan = [f"{item['asal']}: {item['teks'][:160]}" for item in pilihan]
+            dipilih = st.selectbox('Referensi atau footnote yang terdeteksi dalam tesis', range(len(pilihan)), format_func=lambda i: label_pilihan[i], key=f'pilih_ref_{submenu}')
+            sumber_pilihan = pilihan[dipilih]['teks']
+            kunci = f'query_{submenu}'
+            penanda_kunci = f'asal_query_{submenu}'
+            if st.session_state.get(penanda_kunci) != sumber_pilihan:
+                st.session_state[kunci] = sumber_pilihan[:220]
+                st.session_state[penanda_kunci] = sumber_pilihan
+        query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}', disabled=not izin_validasi)
+        if not izin_validasi:
+            st.stop()
         if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary'):
             if len(query.strip()) < 4:
                 st.warning('Masukkan minimal 4 karakter.')
