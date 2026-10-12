@@ -88,7 +88,7 @@ def simpan_katalog_sqlite(items):
     return disimpan
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.7'
+VERSI = '0.6.10'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -1292,6 +1292,39 @@ elif menu.startswith('🔎 Validasi Literatur'):
         if st.session_state.katalog_impor:
             st.dataframe(st.session_state.katalog_impor, use_container_width=True, hide_index=True)
         st.info('Katalog metadata disimpan dalam SQLite lokal aplikasi. Impor tidak mengunggah PDF dan tidak otomatis mengesahkan sumber.')
+        st.markdown('#### Cadangan dan Pemulihan Katalog Induk Pembanding')
+        st.caption('Jika data SQLite kosong setelah reboot, unggah file cadangan CSV di sini untuk memulihkannya.')
+        file_pulih = st.file_uploader(
+            '⬆️ Pulihkan Katalog Pembanding dari Cadangan CSV',
+            type=['csv'], key='pulihkan_katalog_pembanding_csv'
+        )
+        if st.button('📥 Pulihkan Katalog Pembanding', key='proses_pulihkan_katalog'):
+            if file_pulih is None:
+                st.warning('Pilih file cadangan katalog pembanding CSV terlebih dahulu.')
+            else:
+                try:
+                    pulih, galat_pulih = impor_katalog_pembanding(
+                        file_pulih.name, file_pulih.getvalue(), st.session_state.katalog_impor
+                    )
+                    jumlah_pulih = simpan_katalog_sqlite(pulih)
+                    st.session_state.katalog_impor = muat_katalog_sqlite()
+                    st.success(f'{jumlah_pulih} entri berhasil dipulihkan ke SQLite.')
+                    if galat_pulih:
+                        st.warning(f'{len(galat_pulih)} entri dilewati; periksa format atau duplikat.')
+                except Exception as exc:
+                    st.error(f'Pemulihan gagal: {exc}')
+        buffer_pembanding = StringIO()
+        kolom_csv = list(KOLOM_BANK['Katalog Induk Kitab'])
+        writer_pembanding = csv.DictWriter(buffer_pembanding, fieldnames=kolom_csv, extrasaction='ignore')
+        writer_pembanding.writeheader()
+        writer_pembanding.writerows(st.session_state.katalog_impor)
+        st.download_button(
+            '⬇️ Cadangkan Katalog Pembanding ke CSV',
+            data=buffer_pembanding.getvalue().encode('utf-8-sig'),
+            file_name='Cadangan_Katalog_Pembanding_Aswaja_An_Nahdliyah.csv',
+            mime='text/csv', key='cadangan_katalog_pembanding_csv',
+            disabled=not bool(st.session_state.katalog_impor)
+        )
         # Dua cadangan terpisah: daftar pustaka karya ilmiah dan katalog pembanding.
         import csv
         from io import StringIO
@@ -1342,27 +1375,11 @@ elif menu.startswith('🔎 Validasi Literatur'):
                                data=buf_mhs.getvalue().encode('utf-8-sig'),
                                file_name='Katalog_Mahasiswa_Klasifikasi_Awal.csv',
                                mime='text/csv', key='cadangan_library_mahasiswa')
-        st.markdown('#### Cadangan dan Pemulihan Katalog CSV')
-        st.caption('Jika data SQLite kosong setelah reboot, unggah file cadangan CSV di sini untuk memulihkannya.')
-        file_pulih = st.file_uploader(
-            '⬆️ Pulihkan Katalog Pembanding dari Cadangan CSV',
-            type=['csv'], key='pulihkan_katalog_pembanding_csv'
-        )
-        if st.button('📥 Pulihkan Katalog Pembanding', key='proses_pulihkan_katalog'):
-            if file_pulih is None:
-                st.warning('Pilih file cadangan katalog pembanding CSV terlebih dahulu.')
-            else:
-                try:
-                    pulih, galat_pulih = impor_katalog_pembanding(
-                        file_pulih.name, file_pulih.getvalue(), st.session_state.katalog_impor
-                    )
-                    jumlah_pulih = simpan_katalog_sqlite(pulih)
-                    st.session_state.katalog_impor = muat_katalog_sqlite()
-                    st.success(f'{jumlah_pulih} entri berhasil dipulihkan ke SQLite.')
-                    if galat_pulih:
-                        st.warning(f'{len(galat_pulih)} entri dilewati; periksa format atau duplikat.')
-                except Exception as exc:
-                    st.error(f'Pemulihan gagal: {exc}')
+        if not st.session_state.katalog_mahasiswa:
+            st.download_button('⬇️ Cadangkan Katalog Referensi Karya Ilmiah ke CSV',
+                               data=b'', file_name='Katalog_Karya_Ilmiah.csv',
+                               mime='text/csv', key='cadangan_library_mahasiswa_kosong', disabled=True,
+                               help='Impor referensi karya ilmiah dahulu agar cadangan tersedia.')
         kolom_karya = ['No', 'Referensi Karya Ilmiah']
         buffer_karya = StringIO()
         writer_karya = csv.DictWriter(buffer_karya, fieldnames=kolom_karya)
@@ -1370,26 +1387,13 @@ elif menu.startswith('🔎 Validasi Literatur'):
         for nomor, referensi in enumerate(st.session_state.daftar_pustaka, 1):
             writer_karya.writerow({'No': nomor, 'Referensi Karya Ilmiah': str(referensi)})
         st.download_button(
-            '⬇️ Cadangkan Daftar Pustaka dari Dokumen Karya Ilmiah ke CSV',
+            '⬇️ Cadangkan Daftar Pustaka Dokumen ke CSV',
             data=buffer_karya.getvalue().encode('utf-8-sig'),
             file_name='Cadangan_Katalog_Karya_Ilmiah.csv',
             mime='text/csv', key='cadangan_karya_ilmiah_csv',
             disabled=not bool(st.session_state.daftar_pustaka),
             help='Unggah dan analisis karya ilmiah dahulu agar daftar pustaka tersedia.'
         )
-        buffer_pembanding = StringIO()
-        kolom_csv = list(KOLOM_BANK['Katalog Induk Kitab'])
-        writer_pembanding = csv.DictWriter(buffer_pembanding, fieldnames=kolom_csv, extrasaction='ignore')
-        writer_pembanding.writeheader()
-        writer_pembanding.writerows(st.session_state.katalog_impor)
-        st.download_button(
-            '⬇️ Cadangkan Katalog Pembanding ke CSV',
-            data=buffer_pembanding.getvalue().encode('utf-8-sig'),
-            file_name='Cadangan_Katalog_Pembanding_Aswaja_An_Nahdliyah.csv',
-            mime='text/csv', key='cadangan_katalog_pembanding_csv',
-            disabled=not bool(st.session_state.katalog_impor)
-        )
-        st.caption('Katalog karya ilmiah diambil dari daftar pustaka dokumen yang sedang dianalisis; katalog pembanding diambil dari SQLite. Cadangan tidak mengubah status validasi ahli.')
         if st.session_state.get('_sqlite_katalog_error'):
             st.error('SQLite belum dapat dibaca: ' + st.session_state['_sqlite_katalog_error'])
         bank = st.session_state.bank_referensi
