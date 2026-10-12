@@ -1,18 +1,73 @@
 import re
 import json
+import sqlite3
+import os
 import difflib
 import urllib.request
 import urllib.parse
 from io import BytesIO
 from openpyxl import Workbook, load_workbook
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 from docx import Document
 from pypdf import PdfReader
 
+
+# Penyimpanan katalog metadata menggunakan SQLite lokal.
+# Untuk hosting cloud, gunakan storage persisten agar database selamat dari redeploy/reset.
+DB_PATH = Path(os.environ.get('ASWAJA_DB_PATH', str(Path(__file__).resolve().parent / 'data' / 'aswaja_ref_ai.sqlite3')))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def koneksi_sqlite():
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def siapkan_database():
+    with koneksi_sqlite() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS katalog_kitab ("
+            "id_sumber TEXT PRIMARY KEY, data_json TEXT NOT NULL, "
+            "dibuat_pada TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "diperbarui_pada TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+
+def muat_katalog_sqlite():
+    siapkan_database()
+    with koneksi_sqlite() as conn:
+        rows = conn.execute('SELECT data_json FROM katalog_kitab ORDER BY dibuat_pada, id_sumber').fetchall()
+    hasil = []
+    for row in rows:
+        try:
+            item = json.loads(row['data_json'])
+            if isinstance(item, dict):
+                hasil.append(item)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return hasil
+
+def simpan_katalog_sqlite(items):
+    siapkan_database()
+    disimpan = 0
+    with koneksi_sqlite() as conn:
+        for item in items:
+            ident = str(item.get('ID Sumber', '')).strip()
+            if not ident:
+                continue
+            conn.execute(
+                "INSERT INTO katalog_kitab (id_sumber, data_json, diperbarui_pada) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(id_sumber) DO UPDATE SET "
+                "data_json=excluded.data_json, diperbarui_pada=CURRENT_TIMESTAMP",
+                (ident, json.dumps(item, ensure_ascii=False))
+            )
+            disimpan += 1
+    return disimpan
+
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.3'
+VERSI = '0.6.4'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -25,6 +80,14 @@ DEFAULTS = {
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Muat katalog dari SQLite ketika sesi aplikasi dimulai/di-refresh.
+if not st.session_state.get('_sqlite_katalog_dimuat', False):
+    try:
+        st.session_state.katalog_impor = muat_katalog_sqlite()
+        st.session_state['_sqlite_katalog_dimuat'] = True
+    except Exception as exc:
+        st.session_state['_sqlite_katalog_error'] = str(exc)
 
 MENU = {
     '🏠 Beranda': ['Dashboard', 'Panduan Penggunaan', 'Informasi Aplikasi'],
@@ -992,9 +1055,10 @@ elif menu.startswith('🔎 Validasi Literatur'):
             else:
                 try:
                     baru, galat = impor_bank_excel(file_impor.getvalue(), st.session_state.katalog_impor)
-                    st.session_state.katalog_impor.extend(baru)
+                    jumlah_disimpan = simpan_katalog_sqlite(baru)
+                    st.session_state.katalog_impor = muat_katalog_sqlite()
                     st.session_state.laporan_impor = galat
-                    st.success(f'{len(baru)} entri katalog berhasil diimpor sebagai kandidat belum terverifikasi.')
+                    st.success(f'{jumlah_disimpan} entri katalog disimpan ke SQLite dan dimuat kembali dari database.')
                     if galat:
                         st.warning(f'{len(galat)} baris dilewati; periksa rincian di bawah.')
                 except Exception as exc:
@@ -1006,7 +1070,18 @@ elif menu.startswith('🔎 Validasi Literatur'):
                     st.write('- ' + pesan)
         if st.session_state.katalog_impor:
             st.dataframe(st.session_state.katalog_impor, use_container_width=True, hide_index=True)
-        st.info('Impor katalog belum mengunggah file PDF dan belum mengesahkan sumber. Data saat ini tersimpan selama sesi Streamlit, belum di database permanen.')
+        st.info('Katalog metadata disimpan dalam SQLite lokal aplikasi. Impor tidak mengunggah PDF dan tidak otomatis mengesahkan sumber.')
+        if st.session_state.katalog_impor:
+            import csv
+            from io import StringIO
+            csv_buffer = StringIO()
+            kolom_csv = list(KOLOM_BANK['Katalog Induk Kitab'])
+            writer = csv.DictWriter(csv_buffer, fieldnames=kolom_csv, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(st.session_state.katalog_impor)
+            st.download_button('⬇️ Cadangkan Katalog ke CSV', data=csv_buffer.getvalue().encode('utf-8-sig'), file_name='Cadangan_Katalog_Kitab_Aswaja.csv', mime='text/csv', key='cadangan_katalog_sqlite')
+        if st.session_state.get('_sqlite_katalog_error'):
+            st.error('SQLite belum dapat dibaca: ' + st.session_state['_sqlite_katalog_error'])
         bank = st.session_state.bank_referensi
         st.metric('Sumber dalam sesi', len(bank))
         if not bank:
