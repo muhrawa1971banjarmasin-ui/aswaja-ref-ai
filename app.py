@@ -1158,6 +1158,56 @@ elif menu == '📤 Unggah Karya Ilmiah':
             except Exception as e:
                 st.error(f'Gagal membaca dokumen: {e}')
         if st.session_state.hasil_baca:
+            # Cadangan ekstraksi dari PDF/DOCX, terpisah dari impor Zotero/Mendeley.
+            # Tidak mengubah proses pembacaan dokumen maupun katalog pembanding.
+            catatan_pdf = ekstrak_catatan_kaki_pdf(st.session_state.get('halaman_tesis', []))
+            pustaka_pdf = st.session_state.get('daftar_pustaka', [])
+            st.markdown('#### Cadangan Hasil Ekstraksi Referensi Karya Ilmiah')
+            st.caption('Hasil ekstraksi otomatis merupakan kandidat; belum diverifikasi sebagai referensi asli.')
+            buf_ekstraksi = StringIO()
+            kolom_ekstraksi = ['Nama Dokumen', 'Jenis Entri', 'Nomor', 'Halaman PDF', 'Teks Referensi', 'Status']
+            writer_ekstraksi = csv.DictWriter(buf_ekstraksi, fieldnames=kolom_ekstraksi)
+            writer_ekstraksi.writeheader()
+            for item in catatan_pdf:
+                writer_ekstraksi.writerow({'Nama Dokumen': st.session_state.nama_dokumen,
+                    'Jenis Entri': 'Kandidat catatan kaki', 'Nomor': item.get('nomor', ''),
+                    'Halaman PDF': item.get('halaman_pdf', ''), 'Teks Referensi': item.get('teks', ''),
+                    'Status': 'Belum diverifikasi'})
+            for i, entri in enumerate(pustaka_pdf, 1):
+                writer_ekstraksi.writerow({'Nama Dokumen': st.session_state.nama_dokumen,
+                    'Jenis Entri': 'Baris daftar pustaka', 'Nomor': i, 'Halaman PDF': '',
+                    'Teks Referensi': str(entri), 'Status': 'Belum diverifikasi'})
+            st.download_button('⬇️ Cadangkan Hasil Ekstraksi Referensi ke CSV',
+                data=buf_ekstraksi.getvalue().encode('utf-8-sig'),
+                file_name='Ekstraksi_Referensi_Karya_Ilmiah.csv', mime='text/csv',
+                key='unduh_ekstraksi_karya_0611',
+                disabled=not bool(catatan_pdf or pustaka_pdf))
+            st.caption(f'{len(catatan_pdf)} kandidat catatan kaki dan {len(pustaka_pdf)} baris daftar pustaka.')
+            if st.button('📥 Impor Hasil Ekstraksi ke Katalog Referensi Karya Ilmiah',
+                         key='impor_ekstraksi_karya_0611', disabled=not bool(catatan_pdf or pustaka_pdf)):
+                # Baris mentah disimpan apa adanya, tidak diklaim sebagai judul/pengarang yang terverifikasi.
+                # ID stabil membuat klik berulang tidak menghasilkan duplikat.
+                semua = [('Kandidat catatan kaki', str(c.get('teks', '')), c.get('nomor', ''), c.get('halaman_pdf', '')) for c in catatan_pdf]
+                semua += [('Baris daftar pustaka', str(r), i, '') for i, r in enumerate(pustaka_pdf, 1)]
+                data_baru = []
+                for jenis, teks_asli, nomor, halaman_pdf in semua:
+                    if not teks_asli.strip():
+                        continue
+                    sid = 'EKST-' + hashlib.sha256((st.session_state.nama_dokumen + '|' + jenis + '|' + str(nomor) + '|' + str(halaman_pdf) + '|' + teks_asli).encode('utf-8')).hexdigest()[:20].upper()
+                    item = {k: '' for k in KOLOM_BANK['Katalog Induk Kitab']}
+                    item.update({'ID Sumber': sid, 'Jenis Sumber': jenis,
+                        'Judul Alternatif': teks_asli, 'Status Metadata': 'Hasil ekstraksi mentah — belum diverifikasi',
+                        'Catatan': f'Dokumen: {st.session_state.nama_dokumen}; nomor: {nomor}; halaman PDF: {halaman_pdf}; belum dipilah menjadi metadata bibliografi.'})
+                    data_baru.append(item)
+                try:
+                    sebelumnya = {x.get('ID Sumber') for x in muat_katalog_mahasiswa()}
+                    simpan_katalog_mahasiswa(data_baru)
+                    st.session_state.katalog_mahasiswa = muat_katalog_mahasiswa()
+                    jumlah_baru = sum(x['ID Sumber'] not in sebelumnya for x in data_baru)
+                    st.success(f'{jumlah_baru} kandidat baru disimpan di Katalog Referensi Karya Ilmiah; {len(data_baru)-jumlah_baru} sudah ada.')
+                    st.info('Catatan kaki dan baris pustaka masih berupa teks mentah. Perlu pemisahan metadata dan pemeriksaan sebelum validasi AI.')
+                except Exception as exc:
+                    st.error(f'Gagal menyimpan hasil ekstraksi: {exc}')
             st.write('**Dokumen aktif:**', st.session_state.nama_dokumen)
             st.write('**Jenis dokumen:**', st.session_state.get('jenis_dokumen') or 'Belum diketahui')
             if st.session_state.get('judul_terdeteksi'):
