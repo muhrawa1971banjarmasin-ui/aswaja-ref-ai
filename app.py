@@ -1230,10 +1230,11 @@ elif menu.startswith('🔎 Validasi Literatur'):
             if st.session_state.get(penanda_kunci) != sumber_pilihan:
                 st.session_state[kunci] = sumber_pilihan[:220]
                 st.session_state[penanda_kunci] = sumber_pilihan
-        query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}', disabled=not izin_validasi)
-        if not izin_validasi:
-            st.info('Pencarian untuk validasi referensi karya ilmiah menunggu konfirmasi sumber Aswaja An-Nahdliyah. Unggah Sumber Asli dan Bank Referensi tetap dapat digunakan secara mandiri.')
-        if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary', disabled=not izin_validasi):
+        # Pencarian sumber mandiri tidak memerlukan unggahan karya ilmiah.
+        # Validasi keaslian karya ilmiah tetap memerlukan saringan referensi.
+        boleh_cari = True  # Input judul dan tombol pencarian mandiri selalu aktif
+        query = st.text_input('Judul atau kata kunci literatur Aswaja An-Nahdliyah', key=f'query_{submenu}', disabled=not boleh_cari)
+        if st.button('🔍 Cari Referensi', key=f'cari_{submenu}', type='primary', disabled=not boleh_cari):
             if len(query.strip()) < 4:
                 st.warning('Masukkan minimal 4 karakter.')
             else:
