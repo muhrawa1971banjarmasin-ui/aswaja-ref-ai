@@ -1338,11 +1338,31 @@ elif menu.startswith('🔎 Validasi Literatur'):
             w_mhs = csv.DictWriter(buf_mhs, fieldnames=cols_mhs, extrasaction='ignore')
             w_mhs.writeheader()
             w_mhs.writerows(kelompok)
-            st.download_button('⬇️ Cadangkan Library Mahasiswa dan Kategori ke CSV',
+            st.download_button('⬇️ Cadangkan Katalog Referensi Karya Ilmiah ke CSV',
                                data=buf_mhs.getvalue().encode('utf-8-sig'),
                                file_name='Katalog_Mahasiswa_Klasifikasi_Awal.csv',
                                mime='text/csv', key='cadangan_library_mahasiswa')
-        st.markdown('#### Cadangan Katalog CSV')
+        st.markdown('#### Cadangan dan Pemulihan Katalog CSV')
+        st.caption('Jika data SQLite kosong setelah reboot, unggah file cadangan CSV di sini untuk memulihkannya.')
+        file_pulih = st.file_uploader(
+            '⬆️ Pulihkan Katalog Pembanding dari Cadangan CSV',
+            type=['csv'], key='pulihkan_katalog_pembanding_csv'
+        )
+        if st.button('📥 Pulihkan Katalog Pembanding', key='proses_pulihkan_katalog'):
+            if file_pulih is None:
+                st.warning('Pilih file cadangan katalog pembanding CSV terlebih dahulu.')
+            else:
+                try:
+                    pulih, galat_pulih = impor_katalog_pembanding(
+                        file_pulih.name, file_pulih.getvalue(), st.session_state.katalog_impor
+                    )
+                    jumlah_pulih = simpan_katalog_sqlite(pulih)
+                    st.session_state.katalog_impor = muat_katalog_sqlite()
+                    st.success(f'{jumlah_pulih} entri berhasil dipulihkan ke SQLite.')
+                    if galat_pulih:
+                        st.warning(f'{len(galat_pulih)} entri dilewati; periksa format atau duplikat.')
+                except Exception as exc:
+                    st.error(f'Pemulihan gagal: {exc}')
         kolom_karya = ['No', 'Referensi Karya Ilmiah']
         buffer_karya = StringIO()
         writer_karya = csv.DictWriter(buffer_karya, fieldnames=kolom_karya)
