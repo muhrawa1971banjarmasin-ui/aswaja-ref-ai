@@ -3,6 +3,9 @@ import json
 import sqlite3
 import os
 import difflib
+import csv
+import hashlib
+from io import StringIO
 import urllib.request
 import urllib.parse
 from io import BytesIO
@@ -33,6 +36,24 @@ def siapkan_database():
             "dibuat_pada TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
             "diperbarui_pada TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
+
+# Katalog mahasiswa dipisahkan dari katalog induk pembanding.
+def siapkan_katalog_mahasiswa():
+    with koneksi_sqlite() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS katalog_mahasiswa (id_sumber TEXT PRIMARY KEY, data_json TEXT NOT NULL, dibuat_pada TEXT DEFAULT CURRENT_TIMESTAMP)")
+
+def muat_katalog_mahasiswa():
+    siapkan_katalog_mahasiswa()
+    with koneksi_sqlite() as conn:
+        return [json.loads(r['data_json']) for r in conn.execute('SELECT data_json FROM katalog_mahasiswa ORDER BY dibuat_pada, id_sumber')]
+
+def simpan_katalog_mahasiswa(items):
+    siapkan_katalog_mahasiswa()
+    with koneksi_sqlite() as conn:
+        for item in items:
+            conn.execute('INSERT OR IGNORE INTO katalog_mahasiswa (id_sumber, data_json) VALUES (?, ?)',
+                         (item['ID Sumber'], json.dumps(item, ensure_ascii=False)))
+    return len(items)
 
 def muat_katalog_sqlite():
     siapkan_database()
@@ -67,7 +88,7 @@ def simpan_katalog_sqlite(items):
     return disimpan
 
 st.set_page_config(page_title='ASWAJA REF-AI', page_icon='📚', layout='wide')
-VERSI = '0.6.4'
+VERSI = '0.6.7'
 JUDUL = ('Asisten Akademik Berbasis Generative AI dengan Sistem Validasi Referensi '
          'Aswaja An-Nahdliyah dan Sitasi Otomatis Karya Ilmiah Mahasiswa')
 
@@ -75,7 +96,7 @@ DEFAULTS = {
     'isi_dokumen': '', 'nama_dokumen': '', 'identitas': {}, 'kutipan': [],
     'daftar_pustaka': [], 'hasil_baca': False, 'hasil_pencarian': [],
     'riwayat_validasi': [], 'gaya_sitasi': 'Chicago Notes and Bibliography',
-    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {}, 'sitasi_metadata': {}, 'sitasi_hasil': {}, 'katalog_impor': [], 'laporan_impor': [],
+    'bank_referensi': [], 'sumber_aktif': None, 'hasil_perbandingan': None, 'kutipan_langsung': [], 'halaman_tesis': [], 'pasangan_kutipan': {}, 'jenis_dokumen': '', 'bagian_docx': [], 'judul_terdeteksi': '', 'saringan_aswaja': {}, 'rekomendasi_pilihan': [], 'rekomendasi_draf': {}, 'sitasi_metadata': {}, 'sitasi_hasil': {}, 'katalog_impor': [], 'laporan_impor': [], 'katalog_mahasiswa': [], 'laporan_impor_mahasiswa': [],
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -85,6 +106,7 @@ for k, v in DEFAULTS.items():
 if not st.session_state.get('_sqlite_katalog_dimuat', False):
     try:
         st.session_state.katalog_impor = muat_katalog_sqlite()
+        st.session_state.katalog_mahasiswa = muat_katalog_mahasiswa()
         st.session_state['_sqlite_katalog_dimuat'] = True
     except Exception as exc:
         st.session_state['_sqlite_katalog_error'] = str(exc)
@@ -175,6 +197,205 @@ def impor_bank_excel(file_bytes, katalog_lama):
         existing_editions.add(edition)
     wb.close()
     return added, errors
+
+
+# Impor fleksibel katalog pembanding dari template, Zotero, Mendeley, RIS dan BibTeX.
+# Metadata hasil impor SELALU kandidat belum terverifikasi.
+def _nama_kolom(teks):
+    return re.sub(r'[^a-z0-9]+', '', str(teks or '').casefold())
+
+def _pilih(row, *nama):
+    normal = {_nama_kolom(k): v for k, v in row.items()}
+    for n in nama:
+        v = normal.get(_nama_kolom(n))
+        if v is not None and str(v).strip():
+            if isinstance(v, list):
+                return '; '.join(str(x) for x in v if x)
+            return str(v).strip()
+    return ''
+
+def _normalisasi_baris(row):
+    judul = _pilih(row, 'Judul Latin', 'Title', 'Primary Title', 'Book Title', 'booktitle', 'TI', 'T1')
+    judul_arab = _pilih(row, 'Judul Arab')
+    pengarang = _pilih(row, 'Pengarang', 'Author', 'Authors', 'AU', 'A1', 'creator', 'Creators')
+    if not (judul or judul_arab) or not pengarang:
+        return None
+    item = {k: '' for k in KOLOM_BANK['Katalog Induk Kitab']}
+    item.update({
+        'Jenis Sumber': _pilih(row, 'Jenis Sumber', 'Item Type', 'Type', 'TY', 'ENTRYTYPE') or 'Referensi pembanding',
+        'Judul Arab': judul_arab,
+        'Judul Latin': judul,
+        'Judul Alternatif': _pilih(row, 'Judul Alternatif', 'Short Title'),
+        'Pengarang': pengarang,
+        'Muhaqqiq / Editor': _pilih(row, 'Muhaqqiq / Editor', 'Editor', 'ED'),
+        'Penerjemah': _pilih(row, 'Penerjemah', 'Translator'),
+        'Penerbit': _pilih(row, 'Penerbit', 'Publisher', 'PB'),
+        'Kota Terbit': _pilih(row, 'Kota Terbit', 'Place', 'Place Published', 'CY'),
+        'Tahun Terbit': _pilih(row, 'Tahun Terbit', 'Publication Year', 'Year', 'Date', 'PY', 'Y1'),
+        'Cetakan / Edisi': _pilih(row, 'Cetakan / Edisi', 'Edition', 'ET'),
+        'Jilid': _pilih(row, 'Jilid', 'Volume', 'VL'),
+        'Bahasa': _pilih(row, 'Bahasa', 'Language', 'LA'),
+        'ISBN / DOI': _pilih(row, 'ISBN / DOI', 'ISBN', 'DOI', 'SN', 'DO'),
+        'URL Katalog': _pilih(row, 'URL Katalog', 'URL', 'UR'),
+        'URL Teks Asli': _pilih(row, 'URL Teks Asli'),
+        'Nama File PDF': _pilih(row, 'Nama File PDF'),
+        'Status Metadata': 'Belum terverifikasi (hasil impor)',
+    })
+    ident = _pilih(row, 'ID Sumber')
+    if not ident:
+        signature = '|'.join(item.get(k, '').casefold() for k in
+                             ('Judul Arab','Judul Latin','Pengarang','Penerbit','Tahun Terbit','Cetakan / Edisi','Jilid'))
+        ident = 'IMP-' + hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16].upper()
+    item['ID Sumber'] = ident
+    return item
+
+def _ris_records(teks):
+    hasil, current = [], {}
+    for line in teks.splitlines():
+        match = re.match(r'^([A-Z][A-Z0-9])  - (.*)$', line)
+        if match:
+            tag, value = match.groups()
+            if tag == 'TY':
+                current = {'TY': value}
+            elif tag == 'ER':
+                if current:
+                    hasil.append(current)
+                current = {}
+            elif tag in ('AU','A1','A2','ED'):
+                current.setdefault(tag, []).append(value)
+            else:
+                current.setdefault(tag, value)
+        elif current and line.strip():
+            key = next(reversed(current))
+            if isinstance(current[key], str):
+                current[key] += ' ' + line.strip()
+    if current:
+        hasil.append(current)
+    return hasil
+
+def _bib_records(teks):
+    # Pemindai BibTeX sederhana dengan dukungan nilai dalam kurung kurawal dan tanda kutip.
+    records = []
+    starts = list(re.finditer(r'@([a-zA-Z]+)\s*\{', teks))
+    for m in starts:
+        jenis = m.group(1).lower()
+        if jenis in ('comment','preamble','string'):
+            continue
+        start = m.end()
+        depth, quote, escape = 1, False, False
+        end = start
+        while end < len(teks) and depth:
+            ch = teks[end]
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                quote = not quote
+            elif not quote:
+                if ch == '{': depth += 1
+                elif ch == '}': depth -= 1
+            end += 1
+        content = teks[start:end-1]
+        comma = content.find(',')
+        if comma < 0: continue
+        row = {'ENTRYTYPE': jenis}
+        fields = content[comma+1:]
+        i = 0
+        while i < len(fields):
+            match = re.search(r'([a-zA-Z][\w-]*)\s*=\s*', fields[i:])
+            if not match: break
+            key = match.group(1)
+            i += match.end()
+            if i >= len(fields): break
+            opening = fields[i]
+            if opening in ('{','"'):
+                closing = '}' if opening == '{' else '"'
+                i += 1
+                level = 1
+                value_start = i
+                while i < len(fields) and level:
+                    if opening == '{':
+                        if fields[i] == '{': level += 1
+                        elif fields[i] == '}': level -= 1
+                    elif fields[i] == closing and (i == 0 or fields[i-1] != '\\'):
+                        level -= 1
+                    i += 1
+                value = fields[value_start:i-1]
+            else:
+                value_start = i
+                while i < len(fields) and fields[i] != ',': i += 1
+                value = fields[value_start:i].strip()
+            row[key] = re.sub(r'[{}]', '', value).replace(' and ', '; ').strip()
+        records.append(row)
+    return records
+
+def impor_katalog_pembanding(nama_file, file_bytes, katalog_lama):
+    ext = Path(nama_file).suffix.casefold()
+    if ext == '.xlsx':
+        wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+        try:
+            if 'Katalog Induk Kitab' in wb.sheetnames:
+                ws = wb['Katalog Induk Kitab']
+            else:
+                ws = wb.active
+            rows = ws.iter_rows(values_only=True)
+            header = [str(v).strip() if v is not None else '' for v in next(rows)]
+            data = [dict(zip(header, row)) for row in rows if any(v is not None and str(v).strip() for v in row)]
+        finally:
+            wb.close()
+    elif ext in ('.csv','.ris','.bib'):
+        teks = file_bytes.decode('utf-8-sig', errors='replace')
+        if ext == '.ris':
+            data = _ris_records(teks)
+        elif ext == '.bib':
+            data = _bib_records(teks)
+        else:
+            sample = teks[:8192]
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=',;\t')
+                data = list(csv.DictReader(StringIO(teks), dialect=dialect))
+            except csv.Error:
+                data = list(csv.DictReader(StringIO(teks)))
+    else:
+        raise ValueError('Format yang diterima: XLSX, CSV, RIS, BIB.')
+    existing_ids = {str(r.get('ID Sumber','')).strip().casefold() for r in katalog_lama}
+    edition_keys = ('Judul Arab','Judul Latin','Pengarang','Penerbit','Tahun Terbit','Cetakan / Edisi','Jilid')
+    existing_editions = {tuple(str(r.get(k,'')).strip().casefold() for k in edition_keys) for r in katalog_lama}
+    added, errors = [], []
+    for n, row in enumerate(data, 2):
+        item = _normalisasi_baris(row)
+        if item is None:
+            errors.append(f'Entri {n}: judul atau pengarang tidak tersedia.')
+            continue
+        ident = item['ID Sumber'].casefold()
+        edition = tuple(item[k].strip().casefold() for k in edition_keys)
+        if ident in existing_ids or edition in existing_editions:
+            errors.append(f'Entri {n}: sudah ada dalam katalog pembanding.')
+            continue
+        added.append(item)
+        existing_ids.add(ident)
+        existing_editions.add(edition)
+    return added, errors
+
+# Penyaringan awal berbasis aturan, BUKAN keputusan AI atau validasi ahli.
+# Rujukan kitab klasik yang tidak memuat kata Aswaja harus tetap dapat ditinjau.
+KATA_ASWAJA = ('nahdlatul ulama', 'nahdliyah', 'aswaja', 'ahlussunnah wal jamaah',
+               'ahl al-sunnah wa al-jama', 'asyari', 'ashari', 'maturidi', 'pesantren nu')
+KATA_UMUM = ('research methods', 'metodologi penelitian', 'statistik', 'statistics',
+             'quantitative research', 'qualitative research', 'pendidikan umum',
+             'metode penelitian', 'data analysis', 'analisis data')
+
+def kategori_awal(item):
+    teks = ' '.join(str(item.get(k, '')) for k in ('Judul Latin', 'Judul Arab', 'Jenis Sumber')).casefold()
+    if any(k in teks for k in KATA_ASWAJA):
+        return 'Indikasi Aswaja An-Nahdliyah'
+    if any(k in teks for k in KATA_UMUM):
+        return 'Referensi umum'
+    return 'Belum teridentifikasi — tinjau manual'
+
+def kelompokkan_katalog_mahasiswa(items):
+    return [{**item, 'Kategori awal': kategori_awal(item)} for item in items]
 
 def baca_file(file, ubah_status_karya=True):
     """Mempertahankan teks asli dan pemisah halaman PDF; DOCX per paragraf."""
@@ -878,7 +1099,7 @@ def laporan():
 
 st.title('📚 ASWAJA REF-AI')
 st.caption(JUDUL)
-st.info('Versi 0.6.2 | Validasi sumber Aswaja An-Nahdliyah dan penyusunan sitasi dari metadata yang diperiksa pengguna.')
+st.info('Versi 0.6.5 | Validasi sumber Aswaja An-Nahdliyah dan penyusunan sitasi dari metadata yang diperiksa pengguna.')
 with st.sidebar:
     st.header('📚 ASWAJA REF-AI')
     menu = st.radio('Menu Utama', list(MENU), key='menu_utama')
@@ -1047,14 +1268,14 @@ elif menu.startswith('🔎 Validasi Literatur'):
         st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini. Data ini merupakan sumber kandidat, bukan otomatis kitab yang telah divalidasi ahli.')
         st.markdown('#### Ekspor–Impor Massal Bank Referensi')
         st.download_button('⬇️ Unduh Template Excel (5 lembar kerja)', data=template_bank_excel(), file_name='Template_Bank_Referensi_Aswaja_An_Nahdliyah.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='unduh_template_bank')
-        st.caption('Isi ratusan baris katalog di Excel, lalu impor kembali file yang sama. Kolom dan urutan harus dipertahankan.')
-        file_impor = st.file_uploader('⬆️ Impor Template Excel yang sudah diisi', type=['xlsx'], key='impor_template_bank')
+        st.caption('Impor langsung file XLSX, CSV, RIS, atau BibTeX dari Zotero/Mendeley. Template Excel tetap opsional.')
+        file_impor = st.file_uploader('⬆️ Impor Katalog Induk Aswaja An-Nahdliyah (Pembanding) — XLSX, CSV, RIS, BIB', type=['xlsx', 'csv', 'ris', 'bib'], key='impor_template_bank')
         if st.button('📥 Periksa dan Impor Data', key='proses_impor_bank', type='primary'):
             if not file_impor:
-                st.warning('Pilih file Excel terlebih dahulu.')
+                st.warning('Pilih file XLSX, CSV, RIS, atau BIB terlebih dahulu.')
             else:
                 try:
-                    baru, galat = impor_bank_excel(file_impor.getvalue(), st.session_state.katalog_impor)
+                    baru, galat = impor_katalog_pembanding(file_impor.name, file_impor.getvalue(), st.session_state.katalog_impor)
                     jumlah_disimpan = simpan_katalog_sqlite(baru)
                     st.session_state.katalog_impor = muat_katalog_sqlite()
                     st.session_state.laporan_impor = galat
@@ -1063,7 +1284,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
                         st.warning(f'{len(galat)} baris dilewati; periksa rincian di bawah.')
                 except Exception as exc:
                     st.error(f'Impor gagal: {exc}')
-        st.metric('Entri katalog hasil impor (sesi ini)', len(st.session_state.katalog_impor))
+        st.metric('Entri katalog pembanding tersimpan di SQLite', len(st.session_state.katalog_impor))
         if st.session_state.laporan_impor:
             with st.expander('Laporan baris yang perlu diperbaiki'):
                 for pesan in st.session_state.laporan_impor:
@@ -1071,15 +1292,84 @@ elif menu.startswith('🔎 Validasi Literatur'):
         if st.session_state.katalog_impor:
             st.dataframe(st.session_state.katalog_impor, use_container_width=True, hide_index=True)
         st.info('Katalog metadata disimpan dalam SQLite lokal aplikasi. Impor tidak mengunggah PDF dan tidak otomatis mengesahkan sumber.')
-        if st.session_state.katalog_impor:
-            import csv
-            from io import StringIO
-            csv_buffer = StringIO()
-            kolom_csv = list(KOLOM_BANK['Katalog Induk Kitab'])
-            writer = csv.DictWriter(csv_buffer, fieldnames=kolom_csv, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(st.session_state.katalog_impor)
-            st.download_button('⬇️ Cadangkan Katalog ke CSV', data=csv_buffer.getvalue().encode('utf-8-sig'), file_name='Cadangan_Katalog_Kitab_Aswaja.csv', mime='text/csv', key='cadangan_katalog_sqlite')
+        # Dua cadangan terpisah: daftar pustaka karya ilmiah dan katalog pembanding.
+        import csv
+        from io import StringIO
+        st.markdown('#### Katalog Referensi Mahasiswa (terpisah dari pembanding)')
+        file_mahasiswa = st.file_uploader('⬆️ Impor Library Zotero/Mendeley Mahasiswa — XLSX, CSV, RIS, BIB',
+                                          type=['xlsx', 'csv', 'ris', 'bib'], key='impor_katalog_mahasiswa')
+        if st.button('📥 Impor dan Kelompokkan Referensi Mahasiswa', key='proses_katalog_mahasiswa'):
+            if file_mahasiswa is None:
+                st.warning('Pilih file referensi mahasiswa terlebih dahulu.')
+            else:
+                try:
+                    # Parser sama, penyimpanan TIDAK sama dengan katalog pembanding.
+                    baru_mhs, galat_mhs = impor_katalog_pembanding(file_mahasiswa.name, file_mahasiswa.getvalue(),
+                                                                   st.session_state.katalog_mahasiswa)
+                    simpan_katalog_mahasiswa(baru_mhs)
+                    st.session_state.katalog_mahasiswa = muat_katalog_mahasiswa()
+                    st.session_state.laporan_impor_mahasiswa = galat_mhs
+                    st.success(f'{len(baru_mhs)} referensi mahasiswa baru disimpan. Penyaringan awal selesai.')
+                    if galat_mhs:
+                        st.warning(f'{len(galat_mhs)} entri dilewati. Lihat laporan di bawah.')
+                except Exception as exc:
+                    st.error(f'Impor mahasiswa gagal: {exc}')
+        if st.session_state.laporan_impor_mahasiswa:
+            with st.expander('Laporan impor referensi mahasiswa'):
+                for pesan in st.session_state.laporan_impor_mahasiswa:
+                    st.write(pesan)
+        if st.session_state.katalog_mahasiswa:
+            kelompok = kelompokkan_katalog_mahasiswa(st.session_state.katalog_mahasiswa)
+            st.dataframe([{'Judul': x.get('Judul Latin') or x.get('Judul Arab'),
+                           'Pengarang': x.get('Pengarang'), 'Kategori awal': x['Kategori awal']}
+                          for x in kelompok], use_container_width=True, hide_index=True)
+            jalur_aswaja = [x for x in kelompok if x['Kategori awal'] == 'Indikasi Aswaja An-Nahdliyah']
+            jalur_umum = [x for x in kelompok if x['Kategori awal'] == 'Referensi umum']
+            jalur_tinjau = [x for x in kelompok if x['Kategori awal'].startswith('Belum')]
+            a, b, c = st.columns(3)
+            a.metric('Jalur Aswaja An-Nahdliyah', len(jalur_aswaja))
+            b.metric('Jalur Referensi Umum', len(jalur_umum))
+            c.metric('Perlu tinjauan', len(jalur_tinjau))
+            st.info('Pemisahan ini adalah saringan awal berbasis aturan. Generative AI dan validasi ahli belum dijalankan. '
+                    'Rujukan yang belum jelas tidak dibuang; perlu diklasifikasi sebelum validasi lanjutan.')
+            # Cadangan hasil impor mahasiswa mencakup metadata asli dan kategori awal.
+            buf_mhs = StringIO()
+            cols_mhs = list(KOLOM_BANK['Katalog Induk Kitab']) + ['Kategori awal']
+            w_mhs = csv.DictWriter(buf_mhs, fieldnames=cols_mhs, extrasaction='ignore')
+            w_mhs.writeheader()
+            w_mhs.writerows(kelompok)
+            st.download_button('⬇️ Cadangkan Library Mahasiswa dan Kategori ke CSV',
+                               data=buf_mhs.getvalue().encode('utf-8-sig'),
+                               file_name='Katalog_Mahasiswa_Klasifikasi_Awal.csv',
+                               mime='text/csv', key='cadangan_library_mahasiswa')
+        st.markdown('#### Cadangan Katalog CSV')
+        kolom_karya = ['No', 'Referensi Karya Ilmiah']
+        buffer_karya = StringIO()
+        writer_karya = csv.DictWriter(buffer_karya, fieldnames=kolom_karya)
+        writer_karya.writeheader()
+        for nomor, referensi in enumerate(st.session_state.daftar_pustaka, 1):
+            writer_karya.writerow({'No': nomor, 'Referensi Karya Ilmiah': str(referensi)})
+        st.download_button(
+            '⬇️ Cadangkan Daftar Pustaka dari Dokumen Karya Ilmiah ke CSV',
+            data=buffer_karya.getvalue().encode('utf-8-sig'),
+            file_name='Cadangan_Katalog_Karya_Ilmiah.csv',
+            mime='text/csv', key='cadangan_karya_ilmiah_csv',
+            disabled=not bool(st.session_state.daftar_pustaka),
+            help='Unggah dan analisis karya ilmiah dahulu agar daftar pustaka tersedia.'
+        )
+        buffer_pembanding = StringIO()
+        kolom_csv = list(KOLOM_BANK['Katalog Induk Kitab'])
+        writer_pembanding = csv.DictWriter(buffer_pembanding, fieldnames=kolom_csv, extrasaction='ignore')
+        writer_pembanding.writeheader()
+        writer_pembanding.writerows(st.session_state.katalog_impor)
+        st.download_button(
+            '⬇️ Cadangkan Katalog Pembanding ke CSV',
+            data=buffer_pembanding.getvalue().encode('utf-8-sig'),
+            file_name='Cadangan_Katalog_Pembanding_Aswaja_An_Nahdliyah.csv',
+            mime='text/csv', key='cadangan_katalog_pembanding_csv',
+            disabled=not bool(st.session_state.katalog_impor)
+        )
+        st.caption('Katalog karya ilmiah diambil dari daftar pustaka dokumen yang sedang dianalisis; katalog pembanding diambil dari SQLite. Cadangan tidak mengubah status validasi ahli.')
         if st.session_state.get('_sqlite_katalog_error'):
             st.error('SQLite belum dapat dibaca: ' + st.session_state['_sqlite_katalog_error'])
         bank = st.session_state.bank_referensi
