@@ -1266,7 +1266,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
         st.warning('Hasil katalog belum membuktikan keaslian teks, relevansi Aswaja An-Nahdliyah, atau ketepatan halaman. Jika katalog gagal, gunakan tautan pembanding dan unggah sumber asli.')
     elif submenu == 'Bank Referensi Aswaja An-Nahdliyah':
         st.write('Koleksi sumber asli yang sudah diunggah pada sesi Streamlit ini. Data ini merupakan sumber kandidat, bukan otomatis kitab yang telah divalidasi ahli.')
-        st.markdown('#### Ekspor–Impor Massal Bank Referensi')
+        st.markdown('#### Katalog Induk Pembanding Aswaja An-Nahdliyah')
         st.download_button('⬇️ Unduh Template Excel (5 lembar kerja)', data=template_bank_excel(), file_name='Template_Bank_Referensi_Aswaja_An_Nahdliyah.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='unduh_template_bank')
         st.caption('Impor langsung file XLSX, CSV, RIS, atau BibTeX dari Zotero/Mendeley. Template Excel tetap opsional.')
         file_impor = st.file_uploader('⬆️ Impor Katalog Induk Aswaja An-Nahdliyah (Pembanding) — XLSX, CSV, RIS, BIB', type=['xlsx', 'csv', 'ris', 'bib'], key='impor_template_bank')
@@ -1295,7 +1295,7 @@ elif menu.startswith('🔎 Validasi Literatur'):
         # Dua cadangan terpisah: daftar pustaka karya ilmiah dan katalog pembanding.
         import csv
         from io import StringIO
-        st.markdown('#### Katalog Referensi Mahasiswa (terpisah dari pembanding)')
+        st.markdown('#### Katalog Referensi Karya Ilmiah')
         file_mahasiswa = st.file_uploader('⬆️ Impor Library Zotero/Mendeley Mahasiswa — XLSX, CSV, RIS, BIB',
                                           type=['xlsx', 'csv', 'ris', 'bib'], key='impor_katalog_mahasiswa')
         if st.button('📥 Impor dan Kelompokkan Referensi Mahasiswa', key='proses_katalog_mahasiswa'):
